@@ -1,0 +1,40 @@
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon\r
+
+# Build products
+/build/
+*.app
+*.dSYM/
+*.xcarchive
+*.ipa
+
+# Xcode and SwiftPM
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+.swiftpm/
+.build/
+Package.resolved
+
+# Generated icon staging directory
+/Assets/AppIcon.iconset/
+
+# Local configuration and secrets
+.claude/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.mobileprovision
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
