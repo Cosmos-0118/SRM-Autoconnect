@@ -62,13 +62,15 @@ Run:
 ./build.sh
 ```
 
-The script stops an existing `SRM Autoconnect` process, deletes `build/`, compiles every `App/*.swift` file for the current Mac architecture with a macOS 13 deployment target, constructs the app bundle, copies `Info.plist` and `Assets/AppIcon.icns`, signs the bundle with `SRM Autoconnect Dev`, and opens it.
+The script stops an existing `SRM Autoconnect` process, rebuilds into `build/` (scratch space — safe to delete any time), compiles every `App/*.swift` file for the current Mac architecture with a macOS 13 deployment target, constructs the app bundle, copies `Info.plist` and `Assets/AppIcon.icns`, signs the bundle with `SRM Autoconnect Dev`, installs it to `~/Applications/`, and opens the installed copy.
 
-The resulting application is:
+The running application is:
 
 ```text
-build/SRM Autoconnect.app
+~/Applications/SRM Autoconnect.app
 ```
+
+`build/` is disposable intermediate output. The installed copy in `~/Applications/` survives cache clears, `git clean -fdx`, and developer-junk cleaners, and it is also required for **Open at Login** (`SMAppService.mainApp`) to work reliably. To install system-wide instead, run `INSTALL_DIR=/Applications ./build.sh`.
 
 The code-signing identity is a build requirement. It is separate from the SRM username and password that the app stores in the Keychain.
 

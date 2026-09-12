@@ -4,7 +4,13 @@
 APP_NAME="SRM Autoconnect"
 BUNDLE_ID="com.srm.autoconnect"
 VERSION="1.0"
+# BUILD_DIR is scratch space by convention — every cleaner (DevCleaner,
+# CleanMyMac "developer junk", `git clean -fdx`, manual rm) treats `build/`
+# as disposable and will nuke it. So never *run* from here long-term.
+# The script installs the finished bundle to INSTALL_DIR below, which
+# cleaners never touch.
 BUILD_DIR="build"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
 # Local self-signed identity (see Keychain Access). Ad-hoc signing (-s -) has
 # no stable Team ID, and macOS refuses UNUserNotificationCenter authorization
 # for such apps outright — a real (even self-signed) identity is required.
@@ -49,5 +55,15 @@ codesign --force --deep -s "$SIGN_IDENTITY" "$APP_DIR"
 
 echo "Build successful! App created at: ${APP_DIR}"
 
-# Launch it
-open "$APP_DIR"
+# Install to a persistent location. SMAppService "Open at Login" only works
+# reliably when the app lives in /Applications or ~/Applications, and no
+# cache/clean tool ever touches those folders — unlike build/.
+mkdir -p "$INSTALL_DIR"
+# Remove the old installed copy first so a stale bundle (with an old version,
+# old signature, or old executable) can never survive alongside the new one.
+rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
+ditto "$APP_DIR" "${INSTALL_DIR}/${APP_NAME}.app"
+echo "Installed to: ${INSTALL_DIR}/${APP_NAME}.app"
+
+# Launch the installed copy, not the scratch build.
+open "${INSTALL_DIR}/${APP_NAME}.app"
