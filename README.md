@@ -54,7 +54,7 @@ Requirements:
 
 - macOS 13 or later.
 - Xcode Command Line Tools, providing `swiftc` and `codesign`.
-- An installed code-signing identity named exactly `SRM Autoconnect Dev`.
+- A code-signing identity named `SRM Autoconnect Dev` (machine-local — create it once per Mac with `./scripts/create-signing-cert.sh`; the Certificate Assistant GUI often fails with "The specified item could not be found in the keychain", which is a macOS bug the script works around).
 
 Run:
 

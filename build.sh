@@ -14,7 +14,11 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
 # Local self-signed identity (see Keychain Access). Ad-hoc signing (-s -) has
 # no stable Team ID, and macOS refuses UNUserNotificationCenter authorization
 # for such apps outright — a real (even self-signed) identity is required.
-SIGN_IDENTITY="SRM Autoconnect Dev"
+# Override per-machine with: SIGN_IDENTITY="My Name" ./build.sh
+# Use SIGN_IDENTITY=- for ad-hoc (builds, but notifications won't work).
+# No identity yet? Run ./scripts/create-signing-cert.sh (the Certificate
+# Assistant GUI often fails with "item could not be found in the keychain").
+SIGN_IDENTITY="${SIGN_IDENTITY:-SRM Autoconnect Dev}"
 APP_DIR="${BUILD_DIR}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -51,7 +55,27 @@ echo "APPL????" > "${CONTENTS_DIR}/PkgInfo"
 
 # Re-sign after Info.plist/PkgInfo are in place so the bundle identity is
 # sealed correctly, using the real local identity (see SIGN_IDENTITY above).
-codesign --force --deep -s "$SIGN_IDENTITY" "$APP_DIR"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "WARNING: ad-hoc signing — notifications will not work (macOS requires a real identity)."
+  codesign --force --deep -s - "$APP_DIR"
+else
+  if ! security find-identity -v -p codesigning | grep -qF "$SIGN_IDENTITY"; then
+    echo "ERROR: code-signing identity \"$SIGN_IDENTITY\" not found on this Mac."
+    echo ""
+    echo "This name is machine-local (your Keychain), not something git tracks —"
+    echo "so anyone cloning the repo creates it once with:"
+    echo ""
+    echo "  ./scripts/create-signing-cert.sh"
+    echo ""
+    echo "(That script exists because the Certificate Assistant GUI often fails"
+    echo "with 'The specified item could not be found in the keychain.')"
+    echo ""
+    echo "Or build without notifications for now: SIGN_IDENTITY=- ./build.sh"
+    echo "Or use another existing identity: SIGN_IDENTITY=\"<name>\" ./build.sh"
+    exit 1
+  fi
+  codesign --force --deep -s "$SIGN_IDENTITY" "$APP_DIR"
+fi
 
 echo "Build successful! App created at: ${APP_DIR}"
 
