@@ -146,6 +146,10 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
 
     @objc private func handleWakeNotification() {
         Logger.shared.debug("System woke from sleep. Rechecking network in 5s...")
+        // A retry scheduled before sleep would otherwise fire the instant the run
+        // loop resumes, before the interface has reassociated — guaranteeing an
+        // extra failure. Let the 5s settle delay below drive the next attempt.
+        AutoConnectManager.shared.cancelPendingRetryForWake()
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
             guard let self else { return }
             // Interfaces come back up unevenly after wake; don't let a stale

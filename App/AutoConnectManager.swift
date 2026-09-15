@@ -44,6 +44,18 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// or after leaving then rejoining SRMIST.
     private var retryScheduleGeneration = 0
     private let retryDelays: [Double] = [3, 8, 20, 45]
+    /// Set when any navigation in the current attempt failed with
+    /// NSURLErrorNotConnectedToInternet (-1009) — macOS reporting no route at all,
+    /// not the portal being unreachable. This fires reliably right after joining
+    /// Wi-Fi (DHCP/routing hasn't come up yet) and right after waking from sleep,
+    /// and it looks identical to a dead portal in the logs ("connection appears to
+    /// be offline"). Retrying it on the same ladder as a genuinely down portal
+    /// meant a normal join could burn most of the retry budget before the OS
+    /// caught up. A short, separate ladder retries it fast; if it still isn't
+    /// ready after that, it falls through to the normal ladder below.
+    private var sawNetworkNotReadyInAttempt = false
+    private var networkNotReadyRetries = 0
+    private let networkNotReadyDelays: [Double] = [1, 2, 3]
     /// After a whole retry chain is exhausted, back off hard. Previously the 15s
     /// reachability poll restarted the chain immediately, so a portal that was
     /// genuinely down got hammered continuously.
@@ -164,6 +176,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             nextAttemptAt = nil
             retryCount = 0
             consecutiveGiveUps = 0
+            networkNotReadyRetries = 0
         } else if let until = nextAttemptAt, until > Date() {
             Logger.shared.debug("Backing off for another \(Int(until.timeIntervalSinceNow))s — skipping trigger.")
             return
@@ -181,6 +194,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         injectedNavigation = nil
         loginSubmittedForAttempt = -1
         portalFailures = []
+        sawNetworkNotReadyInAttempt = false
         isConnecting = true
         nextAttemptAt = nil
 
@@ -207,6 +221,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
                 self.finish(token)
                 self.retryCount = 0
                 self.consecutiveGiveUps = 0
+                self.networkNotReadyRetries = 0
                 self.showResult(.success)
                 return
             }
@@ -312,6 +327,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // -999 is "cancelled", which we cause ourselves via stopLoading() or by
         // superseding a navigation. It is not a failure.
         guard ns.code != NSURLErrorCancelled else { return }
+
+        if ns.code == NSURLErrorNotConnectedToInternet {
+            sawNetworkNotReadyInAttempt = true
+        }
 
         if ns.code == NSURLErrorServerCertificateUntrusted
             || ns.code == NSURLErrorServerCertificateHasBadDate
@@ -611,6 +630,24 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         nextAttemptAt = nil
         retryCount = 0
         consecutiveGiveUps = 0
+        networkNotReadyRetries = 0
+    }
+
+    /// Called after a system wake. A retry timer scheduled before sleep would
+    /// otherwise fire the instant the run loop resumes — before the Wi-Fi
+    /// interface has had any chance to reassociate and get a DHCP lease — turning
+    /// a normal wake into a guaranteed extra failure that eats into the retry
+    /// budget. NetworkMonitor's own post-wake settle delay drives the next
+    /// attempt instead.
+    func cancelPendingRetryForWake() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { self.cancelPendingRetryForWake() }
+            return
+        }
+        guard nextAttemptAt != nil else { return }
+        retryScheduleGeneration &+= 1
+        nextAttemptAt = nil
+        Logger.shared.debug("System woke — discarding retry timer scheduled before sleep.")
     }
 
     private func succeed(_ token: Int) {
@@ -619,6 +656,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         Logger.shared.log("Connected.")
         retryCount = 0
         consecutiveGiveUps = 0
+        networkNotReadyRetries = 0
         nextAttemptAt = nil
         totalSuccesses += 1
         lastConnectedTime = Date()
@@ -629,6 +667,19 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private func fail(_ token: Int, _ reason: String) {
         guard isLive(token) else { return }
         finish(token)
+
+        if sawNetworkNotReadyInAttempt && networkNotReadyRetries < networkNotReadyDelays.count {
+            let delay = networkNotReadyDelays[networkNotReadyRetries] + Double.random(in: 0...0.5)
+            networkNotReadyRetries += 1
+            Logger.shared.log("Network not ready yet (\(reason)). Retrying in \(Int(delay))s (\(networkNotReadyRetries)/\(networkNotReadyDelays.count)).")
+            nextAttemptAt = Date().addingTimeInterval(delay)
+            let generation = retryScheduleGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.retryScheduleGeneration == generation else { return }
+                self.attemptLogin()
+            }
+            return
+        }
 
         if retryCount < retryDelays.count {
             // Jitter keeps a flapping network from lining every retry up on the same
@@ -646,6 +697,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             let cooldown = giveUpCooldowns[min(consecutiveGiveUps, giveUpCooldowns.count - 1)]
             consecutiveGiveUps += 1
             retryCount = 0
+            networkNotReadyRetries = 0
             nextAttemptAt = Date().addingTimeInterval(cooldown)
             Logger.shared.log("Login failed (\(reason)). Giving up; next try in \(Int(cooldown / 60))m\(Int(cooldown) % 60)s.")
             totalFailures += 1
