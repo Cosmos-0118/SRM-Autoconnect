@@ -34,7 +34,7 @@ An attempt has a 45-second watchdog. A failed attempt retries after approximatel
 
 ## Credentials, notifications, and logs
 
-Enter your SRM ID and password on the **Settings** tab. They are stored as macOS generic-password Keychain items under the service `SRMAutoconnect`, with the accounts `username` and `password`, and are accessible only while the Mac is unlocked. The password is not loaded back into the settings UI.
+Enter your SRM ID and password on the **Settings** tab. They are stored as macOS generic-password Keychain items under the service `SRMAutoconnect`, with the accounts `username` and `password`, and are accessible only while the Mac is unlocked. The password is not loaded back into the settings UI. Saving verifies the write by reading it back, so a failure (denied keychain prompt, locked keychain, stale entry from a previous install) shows a red error with the fix instead of a false success — the same detail is written to the log.
 
 At launch, the app requests permission for alerts and sounds. After a verified successful login, it shows a `Connected to SRM Wi-Fi` notification and plays the macOS `Glass` sound.
 
