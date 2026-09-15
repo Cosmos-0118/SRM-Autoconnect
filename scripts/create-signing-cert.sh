@@ -49,8 +49,16 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
   -config "$TMP/openssl.cnf" -extensions v3_req >/dev/null 2>&1
 
 # Random password for the transient .p12; the key ends up passwordless in the keychain.
+# NOTE: OpenSSL 3 defaults to AES-256-CBC for .p12 files, which macOS's
+# `security import` cannot read ("MAC verification failed ... (wrong password?)"
+# even though the password is correct). Force the classic 3DES format instead:
+# `-legacy` on OpenSSL 3, explicit PBEs elsewhere (incl. macOS LibreSSL).
 P12_PASS="$(openssl rand -hex 16)"
-openssl pkcs12 -export -name "$CERT_NAME" \
+P12_OPTS="-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES"
+if openssl pkcs12 -help 2>&1 | grep -q "\-legacy"; then
+  P12_OPTS="-legacy"
+fi
+openssl pkcs12 -export -name "$CERT_NAME" $P12_OPTS \
   -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
   -out "$TMP/identity.p12" -passout "pass:$P12_PASS"
 
