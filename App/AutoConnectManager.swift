@@ -182,7 +182,19 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             return
         }
 
-        guard credentials() != nil else {
+        let creds: (username: String, password: String)?
+        do {
+            creds = try credentials()
+        } catch let failure as KeychainHelper.KeychainFailure {
+            // Saved but unreadable (denied ACL, locked keychain) — different
+            // from "never saved", and re-saving alone won't fix it.
+            Logger.shared.log("Cannot read saved credentials (\(failure.errorDescription ?? "keychain error")). \(KeychainHelper.hint(for: failure.status))")
+            return
+        } catch {
+            Logger.shared.log("Cannot read saved credentials (\(error.localizedDescription)).")
+            return
+        }
+        guard creds != nil else {
             Logger.shared.log("Credentials not set — open Settings and save your SRM ID and password.")
             return
         }
@@ -355,9 +367,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
 
     // MARK: - Credential injection
 
-    private func credentials() -> (username: String, password: String)? {
-        guard let u = KeychainHelper.shared.read(service: "SRMAutoconnect", account: "username"),
-              let p = KeychainHelper.shared.read(service: "SRMAutoconnect", account: "password"),
+    private func credentials() throws -> (username: String, password: String)? {
+        let u = try KeychainHelper.shared.read(service: "SRMAutoconnect", account: "username")
+        let p = try KeychainHelper.shared.read(service: "SRMAutoconnect", account: "password")
+        guard let u, let p,
               let username = String(data: u, encoding: .utf8),
               let password = String(data: p, encoding: .utf8),
               !username.isEmpty, !password.isEmpty else { return nil }
@@ -377,7 +390,17 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     }
 
     private func injectLogin(_ token: Int) {
-        guard let creds = credentials() else {
+        let creds: (username: String, password: String)?
+        do {
+            creds = try credentials()
+        } catch let failure as KeychainHelper.KeychainFailure {
+            fail(token, "keychain unreadable (\(failure.errorDescription ?? "keychain error"))")
+            return
+        } catch {
+            fail(token, "keychain unreadable (\(error.localizedDescription))")
+            return
+        }
+        guard let creds else {
             fail(token, "credentials unavailable")
             return
         }

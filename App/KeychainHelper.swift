@@ -1,24 +1,50 @@
 import Foundation
 import Security
 
+/// Thin wrapper over the Keychain generic-password class with one rule:
+/// failures are never silent. An earlier fire-and-forget version let the
+/// Settings UI report success while nothing was stored (denied access
+/// prompt, locked keychain, stale ACL) — every call here either succeeds
+/// or throws a human-readable error instead.
 class KeychainHelper {
     static let shared = KeychainHelper()
     private init() {}
 
-    // Pins the item to this app's keychain partition with no interactive auth
-    // (Touch ID / "Always Allow"). Without an explicit access-control object,
-    // locally signed apps can be re-prompted on every reboot.
-    private func selfOnlyAccessControl() -> SecAccessControl? {
-        var error: Unmanaged<CFError>?
-        return SecAccessControlCreateWithFlags(
-            nil,
-            kSecAttrAccessibleWhenUnlocked,
-            [],
-            &error
-        )
+    struct KeychainFailure: LocalizedError {
+        let operation: String
+        let status: OSStatus
+        var errorDescription: String? {
+            "\(operation) failed: \(KeychainHelper.describe(status))"
+        }
     }
 
-    func save(_ data: Data, service: String, account: String) {
+    /// What the user should actually do about it.
+    static func hint(for status: OSStatus) -> String {
+        switch status {
+        case errSecAuthFailed:
+            return "Access was denied. Open Keychain Access, search for “SRMAutoconnect”, delete stale entries (or Get Info > Access Control > allow this app), then save again."
+        case errSecInteractionNotAllowed:
+            return "The login keychain is locked. Unlock it in Keychain Access and try again."
+        case errSecItemNotFound:
+            return "Nothing saved yet — enter your details and press Save."
+        default:
+            return "Open Keychain Access and check the login keychain for “SRMAutoconnect” entries."
+        }
+    }
+
+    static func describe(_ status: OSStatus) -> String {
+        if let message = SecCopyErrorMessageString(status, nil) as String? {
+            return message
+        }
+        return "OSStatus \(status)"
+    }
+
+    /// Add-or-update. Intentionally sets NO kSecAttrAccessControl object:
+    /// app-pinned access controls re-prompt (or hard-fail with
+    /// errSecAuthFailed) whenever a locally-signed build is re-signed,
+    /// moved, or built under a different self-signed cert on a teammate's
+    /// Mac. Default ACL + WhenUnlocked survives rebuilds without prompts.
+    func save(_ data: Data, service: String, account: String) throws {
         let matchQuery: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -26,51 +52,61 @@ class KeychainHelper {
         ]
 
         var addQuery = matchQuery
+        addQuery[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlocked
         addQuery[kSecValueData] = data
-        if let access = selfOnlyAccessControl() {
-            addQuery[kSecAttrAccessControl] = access
-        }
 
         var status = SecItemAdd(addQuery as CFDictionary, nil)
 
         if status == errSecDuplicateItem {
-            var updates: [CFString: Any] = [kSecValueData: data]
-            if let access = selfOnlyAccessControl() {
-                updates[kSecAttrAccessControl] = access
-            }
+            // Update the secret only — never the access metadata. Items
+            // created by older builds carry an app-pinned access-control
+            // object that SecItemUpdate rejects outright; touching just the
+            // data migrates them in place, usually with no prompt.
+            let updates: [CFString: Any] = [kSecValueData: data]
             status = SecItemUpdate(matchQuery as CFDictionary, updates as CFDictionary)
 
-            // Items created with the old SecAccess ACL can't always be migrated
-            // in place; delete and recreate with the modern access control.
             if status != errSecSuccess {
+                // Stale entry that can't be updated in place (e.g. created
+                // under a different signing identity): recreate from scratch.
                 SecItemDelete(matchQuery as CFDictionary)
                 status = SecItemAdd(addQuery as CFDictionary, nil)
             }
         }
+
+        guard status == errSecSuccess else {
+            throw KeychainFailure(operation: "Save", status: status)
+        }
     }
-    
-    func read(service: String, account: String) -> Data? {
+
+    /// Returns nil only when nothing was ever saved. Anything else —
+    /// denied access, locked keychain — throws so the caller can say why
+    /// instead of treating it as "no credentials".
+    func read(service: String, account: String) throws -> Data? {
         let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: account,
-            kSecClass: kSecClassGenericPassword,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
         ]
-        
+
         var result: AnyObject?
-        SecItemCopyMatching(query as CFDictionary, &result)
-        
-        return (result as? Data)
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else {
+            throw KeychainFailure(operation: "Read", status: status)
+        }
+        return result as? Data
     }
-    
+
     func delete(service: String, account: String) {
         let query = [
             kSecAttrService: service,
             kSecAttrAccount: account,
             kSecClass: kSecClassGenericPassword,
         ] as CFDictionary
-        
+
         SecItemDelete(query)
     }
 }

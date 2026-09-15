@@ -4,7 +4,9 @@ import ServiceManagement
 struct SettingsView: View {
     @State private var username = ""
     @State private var password = ""
-    @State private var isSaved = false
+    @State private var saveNotice: String?
+    @State private var saveFailed = false
+    @State private var keychainWarning: String?
     @State private var openAtLogin = false
     
     var body: some View {
@@ -74,9 +76,15 @@ struct SettingsView: View {
             }
             .buttonStyle(PlainButtonStyle())
 
-            if isSaved {
-                Text("CREDENTIALS SAVED SECURELY.")
-                    .foregroundColor(Theme.green)
+            if let notice = saveNotice {
+                Text(notice)
+                    .foregroundColor(saveFailed ? .red : Theme.green)
+                    .font(Theme.mono(11))
+            }
+
+            if let warning = keychainWarning {
+                Text(warning)
+                    .foregroundColor(.red)
                     .font(Theme.mono(11))
             }
 
@@ -103,23 +111,69 @@ struct SettingsView: View {
     }
     
     private func saveCredentials() {
-        if let user = username.data(using: .utf8) {
-            KeychainHelper.shared.save(user, service: "SRMAutoconnect", account: "username")
-        }
-        if let pass = password.data(using: .utf8) {
-            KeychainHelper.shared.save(pass, service: "SRMAutoconnect", account: "password")
-        }
-        isSaved = true
-        Logger.shared.log("Credentials saved securely.")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            isSaved = false
+        do {
+            guard let user = username.data(using: .utf8),
+                  let pass = password.data(using: .utf8),
+                  !username.isEmpty, !password.isEmpty else {
+                throw SaveError.emptyFields
+            }
+            try KeychainHelper.shared.save(user, service: "SRMAutoconnect", account: "username")
+            try KeychainHelper.shared.save(pass, service: "SRMAutoconnect", account: "password")
+
+            // Verify-after-write: a save that can't be read back is not a save.
+            // This is what caught the old silent-failure bug on fresh machines.
+            let checkUser = try KeychainHelper.shared.read(service: "SRMAutoconnect", account: "username")
+            let checkPass = try KeychainHelper.shared.read(service: "SRMAutoconnect", account: "password")
+            guard checkUser == user, checkPass == pass else {
+                throw SaveError.verifyMismatch
+            }
+
+            showSaveResult("CREDENTIALS SAVED SECURELY.", failed: false)
+            Logger.shared.log("Credentials saved securely.")
+        } catch let failure as KeychainHelper.KeychainFailure {
+            let message = "SAVE FAILED: \(failure.errorDescription ?? "keychain error") \(KeychainHelper.hint(for: failure.status))"
+            showSaveResult(message, failed: true)
+            Logger.shared.log(message)
+        } catch {
+            let message = "SAVE FAILED: \(error.localizedDescription)"
+            showSaveResult(message, failed: true)
+            Logger.shared.log(message)
         }
     }
-    
+
+    private func showSaveResult(_ message: String, failed: Bool) {
+        saveNotice = message
+        saveFailed = failed
+        // Errors stay up longer so they can actually be read.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (failed ? 8 : 2)) {
+            saveNotice = nil
+        }
+    }
+
+    private enum SaveError: LocalizedError {
+        case emptyFields
+        case verifyMismatch
+        var errorDescription: String? {
+            switch self {
+            case .emptyFields: return "Enter both SRM ID and password first."
+            case .verifyMismatch: return "Write succeeded but read-back differed — the login keychain may be locked."
+            }
+        }
+    }
+
     private func loadCredentials() {
-        if let user = KeychainHelper.shared.read(service: "SRMAutoconnect", account: "username"),
-           let usernameStr = String(data: user, encoding: .utf8) {
-            self.username = usernameStr
+        do {
+            if let user = try KeychainHelper.shared.read(service: "SRMAutoconnect", account: "username"),
+               let usernameStr = String(data: user, encoding: .utf8) {
+                self.username = usernameStr
+            }
+            keychainWarning = nil
+        } catch let failure as KeychainHelper.KeychainFailure {
+            // Stored credentials exist but are unreadable (denied ACL, locked
+            // keychain) — say so instead of showing a blank field.
+            keychainWarning = "KEYCHAIN: \(failure.errorDescription ?? "read error") \(KeychainHelper.hint(for: failure.status))"
+        } catch {
+            keychainWarning = "KEYCHAIN: \(error.localizedDescription)"
         }
         
         if #available(macOS 13.0, *) {
