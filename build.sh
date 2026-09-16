@@ -36,7 +36,10 @@ mkdir -p "$RESOURCES_DIR"
 
 # Compile Swift files
 echo "Compiling Swift files..."
+# -O matters here: this is a daemon-shaped app that runs for days, and the
+# default (-Onone) ships unoptimised code for all of it.
 swiftc \
+  -O \
   -target $(uname -m)-apple-macosx13.0 \
   App/*.swift \
   -o "${MACOS_DIR}/${APP_NAME}"
@@ -55,9 +58,11 @@ echo "APPL????" > "${CONTENTS_DIR}/PkgInfo"
 
 # Re-sign after Info.plist/PkgInfo are in place so the bundle identity is
 # sealed correctly, using the real local identity (see SIGN_IDENTITY above).
+# No --deep: it is deprecated, and this bundle has no nested code to sign
+# anyway — it is one executable, an Info.plist and an icon.
 if [ "$SIGN_IDENTITY" = "-" ]; then
   echo "WARNING: ad-hoc signing — notifications will not work (macOS requires a real identity)."
-  codesign --force --deep -s - "$APP_DIR"
+  codesign --force -s - "$APP_DIR"
 else
   if ! security find-identity -v -p codesigning | grep -qF "$SIGN_IDENTITY"; then
     echo "ERROR: code-signing identity \"$SIGN_IDENTITY\" not found on this Mac."
@@ -74,7 +79,7 @@ else
     echo "Or use another existing identity: SIGN_IDENTITY=\"<name>\" ./build.sh"
     exit 1
   fi
-  codesign --force --deep -s "$SIGN_IDENTITY" "$APP_DIR"
+  codesign --force -s "$SIGN_IDENTITY" "$APP_DIR"
 fi
 
 echo "Build successful! App created at: ${APP_DIR}"
@@ -83,6 +88,26 @@ echo "Build successful! App created at: ${APP_DIR}"
 # reliably when the app lives in /Applications or ~/Applications, and no
 # cache/clean tool ever touches those folders — unlike build/.
 mkdir -p "$INSTALL_DIR"
+
+# Warn about a copy sitting in the *other* standard location. INSTALL_DIR
+# defaults to ~/Applications, so someone who once ran with INSTALL_DIR=/Applications
+# ends up with two installs. pkill above stops whichever was running, this
+# script then launches its own copy, and the two silently drift — including
+# which one SMAppService registered for "Open at Login", which is why the
+# toggle can appear to do nothing.
+for OTHER in "$HOME/Applications" "/Applications"; do
+  [ "$OTHER" = "$INSTALL_DIR" ] && continue
+  if [ -d "${OTHER}/${APP_NAME}.app" ]; then
+    echo ""
+    echo "NOTE: another copy is installed at ${OTHER}/${APP_NAME}.app"
+    echo "      This one installs to ${INSTALL_DIR}. Two copies will drift apart,"
+    echo "      and 'Open at Login' may still point at the other one. Remove it with:"
+    echo "        rm -rf \"${OTHER}/${APP_NAME}.app\""
+    echo "      Or install over it instead: INSTALL_DIR=\"${OTHER}\" ./build.sh"
+    echo ""
+  fi
+done
+
 # Remove the old installed copy first so a stale bundle (with an old version,
 # old signature, or old executable) can never survive alongside the new one.
 rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
