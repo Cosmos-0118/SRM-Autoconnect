@@ -21,10 +21,18 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// deliberate backoff doesn't look like the app has silently stopped working.
     @Published var nextAttemptAt: Date?
 
-    enum LoginResult { case success, failure }
+    /// `alreadyOnline` is distinct from `success` because no login happened. It
+    /// used to report plain success, so Force Connect on a working connection
+    /// claimed to have connected you.
+    enum LoginResult { case success, alreadyOnline, failure }
     /// Drives a transient banner in DashboardView — otherwise a login attempt resolves
     /// with nothing visible in the UI beyond the spinner disappearing.
     @Published var lastResult: LoginResult?
+    /// Why the last attempt failed, in the user's words. The banner previously
+    /// said only "LOGIN FAILED — CHECK CREDENTIALS" no matter the cause, which
+    /// is actively misleading when the real reason was that the portal was
+    /// unreachable or the network had not come up yet.
+    @Published var lastFailureReason: String?
     private var resultClearWorkItem: DispatchWorkItem?
 
     // MARK: - Attempt lifecycle
@@ -63,6 +71,8 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private var consecutiveGiveUps = 0
     /// Whole-attempt watchdog: no attempt may occupy `isConnecting` longer than this.
     private let attemptHardTimeout: TimeInterval = 45
+    /// How long to stop retrying when the blocker is the user, not the network.
+    private let missingCredentialsBackoff: TimeInterval = 300
 
     private var webView: WKWebView!
     private var hostWindow: NSWindow!
@@ -196,20 +206,30 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             return
         }
 
+        // Every bail-out below reports itself. These paths used to just log and
+        // return, so pressing FORCE CONNECT with nothing saved changed no
+        // published state whatsoever and the dashboard sat there as though the
+        // click had not happened. They also set no backoff, so with no
+        // credentials the reachability poll went on probing four hosts every ten
+        // seconds, forever, to reach a function that could never do anything.
         let creds: (username: String, password: String)?
         do {
             creds = try credentials()
         } catch let failure as KeychainHelper.KeychainFailure {
             // Saved but unreadable (denied ACL, locked keychain) — different
             // from "never saved", and re-saving alone won't fix it.
-            Logger.shared.log("Cannot read saved credentials (\(failure.errorDescription ?? "keychain error")). \(KeychainHelper.hint(for: failure.status))")
+            let message = "Cannot read saved credentials (\(failure.errorDescription ?? "keychain error")). \(KeychainHelper.hint(for: failure.status))"
+            Logger.shared.log(message)
+            reportBlocked("keychain unreadable — open Settings")
             return
         } catch {
             Logger.shared.log("Cannot read saved credentials (\(error.localizedDescription)).")
+            reportBlocked("keychain unreadable — open Settings")
             return
         }
         guard creds != nil else {
             Logger.shared.log("Credentials not set — open Settings and save your SRM ID and password.")
+            reportBlocked("no credentials saved — open Settings")
             return
         }
 
@@ -248,7 +268,11 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
                 self.retryCount = 0
                 self.consecutiveGiveUps = 0
                 self.networkNotReadyRetries = 0
-                self.showResult(.success)
+                // Deliberately not a success: nothing was logged in, so counting
+                // it would inflate the Success metric and move LAST CONNECTED
+                // every time the poll happened to run while things were fine.
+                self.lastFailureReason = nil
+                self.showResult(.alreadyOnline)
                 return
             }
 
@@ -710,6 +734,29 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         networkNotReadyRetries = 0
     }
 
+    /// Called when the user saves or removes credentials. Without this, fixing a
+    /// mistyped password did nothing for up to ten minutes: the failures it
+    /// caused had already walked the app into a give-up cooldown, and nothing in
+    /// the save path cleared it — so the app sat there with correct credentials
+    /// and refused to use them, which reads exactly like the save not working.
+    func credentialsChanged() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { self.credentialsChanged() }
+            return
+        }
+        retryScheduleGeneration &+= 1
+        nextAttemptAt = nil
+        retryCount = 0
+        consecutiveGiveUps = 0
+        networkNotReadyRetries = 0
+        lastResult = nil
+        lastFailureReason = nil
+        Logger.shared.debug("Credentials changed — cleared backoff.")
+        if NetworkMonitor.shared.isConnectedToSRM {
+            attemptLogin()
+        }
+    }
+
     /// Called after a system wake. A retry timer scheduled before sleep would
     /// otherwise fire the instant the run loop resumes — before the Wi-Fi
     /// interface has had any chance to reassociate and get a DHCP lease — turning
@@ -759,6 +806,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         nextAttemptAt = nil
         totalSuccesses += 1
         lastConnectedTime = Date()
+        lastFailureReason = nil
         NotificationManager.shared.showConnectedToast()
         showResult(.success)
     }
@@ -766,6 +814,13 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private func fail(_ token: Int, _ reason: String) {
         guard isLive(token) else { return }
         finish(token)
+
+        // Count every resolved failed attempt. This used to increment only in
+        // the give-up branch below, so Success counted attempts while Failed
+        // counted whole give-up episodes — two different units side by side
+        // under two labels that read as a matched pair, both parked near zero.
+        totalFailures += 1
+        lastFailureReason = reason
 
         if sawNetworkNotReadyInAttempt && networkNotReadyRetries < networkNotReadyDelays.count {
             let delay = networkNotReadyDelays[networkNotReadyRetries] + Double.random(in: 0...0.5)
@@ -775,6 +830,12 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             let generation = retryScheduleGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self, self.retryScheduleGeneration == generation else { return }
+                // Clear the deadline as soon as it is reached. attemptLogin()
+                // only clears it on a path that actually starts an attempt, so
+                // when the retry was skipped (off SRMIST, no credentials) the
+                // stale date stayed published and the dashboard's NEXT ATTEMPT
+                // row kept counting past zero, forever.
+                self.nextAttemptAt = nil
                 self.attemptLogin()
             }
             return
@@ -790,6 +851,12 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             let generation = retryScheduleGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self, self.retryScheduleGeneration == generation else { return }
+                // Clear the deadline as soon as it is reached. attemptLogin()
+                // only clears it on a path that actually starts an attempt, so
+                // when the retry was skipped (off SRMIST, no credentials) the
+                // stale date stayed published and the dashboard's NEXT ATTEMPT
+                // row kept counting past zero, forever.
+                self.nextAttemptAt = nil
                 self.attemptLogin()
             }
         } else {
@@ -799,22 +866,37 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             networkNotReadyRetries = 0
             nextAttemptAt = Date().addingTimeInterval(cooldown)
             Logger.shared.log("Login failed (\(reason)). Giving up; next try in \(Int(cooldown / 60))m\(Int(cooldown) % 60)s.")
-            totalFailures += 1
             showResult(.failure)
             // The cooldown is enforced by startLogin(); this timer just makes sure
             // something re-triggers even if no network event happens meanwhile.
             let generation = retryScheduleGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + cooldown + 1) { [weak self] in
-                guard let self, self.retryScheduleGeneration == generation,
-                      !self.isConnecting, NetworkMonitor.shared.isConnectedToSRM else { return }
+                guard let self, self.retryScheduleGeneration == generation else { return }
+                self.nextAttemptAt = nil
+                guard !self.isConnecting, NetworkMonitor.shared.isConnectedToSRM else { return }
                 self.attemptLogin()
             }
         }
     }
 
+    /// Surfaces a pre-flight bail-out and parks the retry loop. Without the
+    /// backoff the caller would be re-entered on every reachability poll.
+    private func reportBlocked(_ reason: String) {
+        lastFailureReason = reason
+        showResult(.failure)
+        nextAttemptAt = Date().addingTimeInterval(missingCredentialsBackoff)
+    }
+
     private func showResult(_ result: LoginResult) {
         resultClearWorkItem?.cancel()
         lastResult = result
+        // A failure sticks until something supersedes it. It used to erase
+        // itself after five seconds of wall-clock time regardless of whether
+        // anyone was looking — and since this app's window is a popover that is
+        // shut almost all the time, that meant login failures were, in practice,
+        // never seen. Successes still clear themselves; a stale green banner is
+        // the one that misleads.
+        guard result != .failure else { return }
         let workItem = DispatchWorkItem { [weak self] in self?.lastResult = nil }
         resultClearWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: workItem)

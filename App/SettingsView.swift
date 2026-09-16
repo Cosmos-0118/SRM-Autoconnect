@@ -2,8 +2,10 @@ import SwiftUI
 import ServiceManagement
 
 struct SettingsView: View {
-    @State private var username = ""
-    @State private var password = ""
+    /// The Settings tab is destroyed and rebuilt every time the user switches
+    /// tabs, so anything held in @State here is silently discarded — including a
+    /// half-typed password. These drafts outlive the view.
+    @ObservedObject private var draft = SettingsDraft.shared
     @State private var saveNotice: String?
     @State private var saveFailed = false
     @State private var keychainWarning: String?
@@ -12,6 +14,15 @@ struct SettingsView: View {
     /// rule in saveCredentials().
     @State private var hasStoredPassword = false
     @State private var noticeClearWorkItem: DispatchWorkItem?
+    @State private var loginItemNeedsApproval = false
+
+    /// Treat "registered, pending the user's approval" as on. Comparing only
+    /// against `.enabled` made the toggle snap back to off the moment macOS
+    /// asked for approval, which is the normal path on a fresh install.
+    private static func loginItemIsOn() -> Bool {
+        let status = SMAppService.mainApp.status
+        return status == .enabled || status == .requiresApproval
+    }
     
     var body: some View {
         ScrollView {
@@ -25,7 +36,7 @@ struct SettingsView: View {
                 Text("SRM ID")
                     .foregroundColor(Theme.dimGreen)
                     .font(Theme.mono(13))
-                TextField("Enter ID", text: $username)
+                TextField("Enter ID", text: $draft.username)
                     .textFieldStyle(PlainTextFieldStyle())
                     .padding(10)
                     .terminalPanel()
@@ -37,7 +48,7 @@ struct SettingsView: View {
                 Text("PASSWORD")
                     .foregroundColor(Theme.dimGreen)
                     .font(Theme.mono(13))
-                SecureField(hasStoredPassword ? "Saved — leave blank to keep" : "Enter Password", text: $password)
+                SecureField(hasStoredPassword ? "Saved — leave blank to keep" : "Enter Password", text: $draft.password)
                     .textFieldStyle(PlainTextFieldStyle())
                     .padding(10)
                     .terminalPanel()
@@ -45,7 +56,10 @@ struct SettingsView: View {
                     .accentColor(Theme.green)
             }
 
-            if #available(macOS 13.0, *) {
+            // No #available check: the deployment target is macOS 13, so the
+            // old `if #available(macOS 13.0, *)` was always true and merely hid
+            // the fact that this control is unconditional.
+            VStack(alignment: .leading, spacing: 4) {
                 Toggle("Open at Login", isOn: $openAtLogin)
                     .toggleStyle(SwitchToggleStyle(tint: Theme.green))
                     .font(Theme.mono(13))
@@ -54,7 +68,7 @@ struct SettingsView: View {
                         // loadCredentials() syncs this toggle to the actual system status on
                         // every appear, which itself fires onChange — skip if nothing's
                         // actually changing so that sync doesn't look like a user action.
-                        let currentlyEnabled = SMAppService.mainApp.status == .enabled
+                        let currentlyEnabled = Self.loginItemIsOn()
                         guard newValue != currentlyEnabled else { return }
                         do {
                             if newValue {
@@ -74,7 +88,20 @@ struct SettingsView: View {
                             openAtLogin = currentlyEnabled
                             showSaveResult("OPEN AT LOGIN FAILED: \(error.localizedDescription)", failed: true)
                         }
+                        loginItemNeedsApproval = SMAppService.mainApp.status == .requiresApproval
                     }
+
+                // .requiresApproval means macOS accepted the registration but is
+                // waiting for the user to allow it in System Settings. Nothing
+                // said so, and the status check treated it as "off", so the
+                // switch silently flipped itself back and the feature looked
+                // broken.
+                if loginItemNeedsApproval {
+                    Text("NEEDS APPROVAL IN SYSTEM SETTINGS › GENERAL › LOGIN ITEMS")
+                        .font(Theme.mono(9))
+                        .foregroundColor(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             
             Button(action: saveCredentials) {
@@ -103,7 +130,7 @@ struct SettingsView: View {
             // the Keychain helper had a delete() that nothing ever called, so a
             // user who typed the wrong account, or who wanted their password off
             // a shared Mac, had to go and hunt through Keychain Access for it.
-            if hasStoredPassword || !username.isEmpty {
+            if hasStoredPassword || !draft.username.isEmpty {
                 Button(action: forgetCredentials) {
                     Text("> FORGET SAVED CREDENTIALS <")
                         .font(Theme.mono(11))
@@ -139,7 +166,11 @@ struct SettingsView: View {
     
     private func saveCredentials() {
         do {
-            guard let user = username.data(using: .utf8), !username.isEmpty else {
+            // A trailing space pasted in from elsewhere produces a login that
+            // fails forever in a way indistinguishable from a wrong password,
+            // and the field gives no visual hint that it is there.
+            draft.username = draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let user = draft.username.data(using: .utf8), !draft.username.isEmpty else {
                 throw SaveError.emptyID
             }
 
@@ -150,13 +181,13 @@ struct SettingsView: View {
             // to proceed short of retyping the password. An empty field now means
             // "leave the stored password alone"; it is only an error when there
             // is no stored password to leave alone.
-            let keepExisting = password.isEmpty
+            let keepExisting = draft.password.isEmpty
             if keepExisting && !hasStoredPassword {
                 throw SaveError.emptyPassword
             }
 
             try KeychainHelper.shared.save(user, service: "SRMAutoconnect", account: "username")
-            let pass = password.data(using: .utf8)
+            let pass = draft.password.data(using: .utf8)
             if let pass, !keepExisting {
                 try KeychainHelper.shared.save(pass, service: "SRMAutoconnect", account: "password")
             }
@@ -176,7 +207,10 @@ struct SettingsView: View {
             // has round-tripped successfully.
             keychainWarning = nil
             hasStoredPassword = true
-            password = ""
+            draft.password = ""
+            // Let the manager act on the new credentials now rather than
+            // after whatever backoff the old, wrong ones had earned.
+            AutoConnectManager.shared.credentialsChanged()
             showSaveResult(keepExisting ? "SRM ID SAVED. PASSWORD UNCHANGED." : "CREDENTIALS SAVED SECURELY.", failed: false)
             Logger.shared.log(keepExisting ? "SRM ID saved; stored password left unchanged." : "Credentials saved securely.")
         } catch let failure as KeychainHelper.KeychainFailure {
@@ -194,10 +228,11 @@ struct SettingsView: View {
         do {
             try KeychainHelper.shared.delete(service: "SRMAutoconnect", account: "username")
             try KeychainHelper.shared.delete(service: "SRMAutoconnect", account: "password")
-            username = ""
-            password = ""
+            draft.username = ""
+            draft.password = ""
             hasStoredPassword = false
             keychainWarning = nil
+            AutoConnectManager.shared.credentialsChanged()
             showSaveResult("SAVED CREDENTIALS REMOVED.", failed: false)
             Logger.shared.log("Saved credentials removed from the keychain.")
         } catch let failure as KeychainHelper.KeychainFailure {
@@ -240,10 +275,12 @@ struct SettingsView: View {
 
     private func loadCredentials() {
         do {
-            if let user = try KeychainHelper.shared.read(service: "SRMAutoconnect", account: "username"),
+            if !draft.seeded,
+               let user = try KeychainHelper.shared.read(service: "SRMAutoconnect", account: "username"),
                let usernameStr = String(data: user, encoding: .utf8) {
-                self.username = usernameStr
+                draft.username = usernameStr
             }
+            draft.seeded = true
             // Presence only — the password itself is deliberately never loaded
             // back into the UI. Knowing it exists is what lets a blank field mean
             // "keep the saved one" instead of "you forgot to type it".
@@ -257,8 +294,21 @@ struct SettingsView: View {
             keychainWarning = "KEYCHAIN: \(error.localizedDescription)"
         }
         
-        if #available(macOS 13.0, *) {
-            openAtLogin = SMAppService.mainApp.status == .enabled
-        }
+        openAtLogin = Self.loginItemIsOn()
+        loginItemNeedsApproval = SMAppService.mainApp.status == .requiresApproval
     }
+}
+
+
+/// Survives the Settings tab being torn down and rebuilt on every tab switch.
+final class SettingsDraft: ObservableObject {
+    static let shared = SettingsDraft()
+    private init() {}
+
+    @Published var username = ""
+    @Published var password = ""
+    /// Whether the SRM ID has been seeded from the keychain yet. Without it,
+    /// returning to the tab would re-read the stored ID over the top of an edit
+    /// the user had not saved.
+    var seeded = false
 }
