@@ -225,7 +225,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         nextAttemptAt = nil
 
         let ssid = NetworkMonitor.shared.currentSSID
-        if !ssid.uppercased().contains("SRMIST") {
+        if !NetworkMonitor.isSRMNetwork(ssid) {
             Logger.shared.debug("Current network is '\(ssid.isEmpty ? "none" : ssid)', not SRMIST — attempting anyway.")
         }
 
@@ -298,7 +298,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             Logger.shared.debug("Ignoring completion from a superseded portal navigation.")
             return
         }
-        let url = webView.url?.absoluteString ?? ""
+        let url = redacted(webView.url)
         Logger.shared.debug("Loaded: \(url)")
 
         guard loginSubmittedForAttempt != token else {
@@ -369,6 +369,24 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private func belongsToLiveAttempt(_ navigation: WKNavigation!, token: Int) -> Bool {
         guard let navigation else { return false }
         return navigationAttempts[ObjectIdentifier(navigation)] == token
+    }
+
+    /// Scheme, host and path only. The log file lives at a readable path in
+    /// ~/Library/Logs and is meant to be pasted into a support thread, and a
+    /// portal whose login form submits by GET puts the username and password
+    /// straight into the query string — which the post-submit navigation would
+    /// then have written there verbatim.
+    private func redacted(_ url: URL?) -> String {
+        guard let url else { return "" }
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.host ?? "(url)"
+        }
+        let hadQuery = !(parts.percentEncodedQuery ?? "").isEmpty
+        let hadFragment = !(parts.percentEncodedFragment ?? "").isEmpty
+        parts.query = nil
+        parts.fragment = nil
+        let base = parts.string ?? url.host ?? "(url)"
+        return base + (hadQuery || hadFragment ? " (query redacted)" : "")
     }
 
     private func isTrustedPortalURL(_ url: URL?) -> Bool {
@@ -479,15 +497,33 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
               'input[id*="submit" i]', 'button[id*="submit" i]',
               'input[type="button"]', 'button'
             ];
+            // Several of those selectors match *text inputs* as readily as
+            // buttons, and portal login forms are exactly where that bites:
+            // a username field with id="loginId" or name="login" is completely
+            // ordinary, so 'input[id*="login" i]' would pick the field we had
+            // just typed the username into. Clicking a text input does nothing,
+            // the form is never submitted, and the attempt then dies on the
+            // verification timeout looking like a rejected password. Require the
+            // element to actually be clickable before accepting it.
+            function isClickable(el) {
+              var tag = (el.tagName || '').toLowerCase();
+              if (tag === 'button') return true;
+              if (tag !== 'input') return false;
+              var t = (el.type || '').toLowerCase();
+              return t === 'submit' || t === 'button' || t === 'image' || t === 'reset';
+            }
             var btn = null;
             for (var s = 0; s < selectors.length && !btn; s++) {
               var found;
               try { found = scope.querySelectorAll(selectors[s]); } catch (e) { continue; }
               for (var j = 0; j < found.length; j++) {
-                if (!found[j].disabled) { btn = found[j]; break; }
+                if (!found[j].disabled && isClickable(found[j])) { btn = found[j]; break; }
               }
             }
-            if (btn) { btn.click(); report('submitted', btn.value || btn.textContent || btn.id); }
+            // Report what was clicked by its identity, never by its value: on a
+            // form where the chosen control carries user-entered text, that value
+            // would be written verbatim into the on-disk log.
+            if (btn) { btn.click(); report('submitted', (btn.tagName || '') + '#' + (btn.id || '') + '.' + (btn.type || '')); }
             else if (pass.form) { pass.form.submit(); report('submitted', 'form.submit()'); }
             else { report('nosubmit', 'no submit control found'); }
           }, 500);
@@ -685,10 +721,28 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             DispatchQueue.main.async { self.cancelPendingRetryForWake() }
             return
         }
-        guard nextAttemptAt != nil else { return }
+        // An attempt that was in flight when the machine went to sleep began on
+        // whatever network existed before sleep, and its WebKit navigation is now
+        // meaningless. Previously this function ignored that case entirely: it
+        // only looked at `nextAttemptAt`, so the stale attempt kept `isConnecting`
+        // true and blocked every entry point until the 45s watchdog got round to
+        // failing it — which also cost a rung of the retry ladder.
+        if isConnecting {
+            finish(currentAttempt)
+            Logger.shared.debug("System woke — cancelled the portal login that was in flight before sleep.")
+        }
+
+        guard nextAttemptAt != nil || retryCount > 0 || networkNotReadyRetries > 0 else { return }
         retryScheduleGeneration &+= 1
         nextAttemptAt = nil
-        Logger.shared.debug("System woke — discarding retry timer scheduled before sleep.")
+        // Reset the ladder rather than merely dropping the pending timer. Waking
+        // up is a fresh start, not a continuation of whatever was failing before
+        // sleep, and leaving the counters advanced meant each wake began one rung
+        // further down the backoff — so a laptop opened a few times across a day
+        // reached the 10-minute cooldown without a single genuine failure.
+        retryCount = 0
+        networkNotReadyRetries = 0
+        Logger.shared.debug("System woke — discarded retry timer scheduled before sleep and reset the retry ladder.")
     }
 
     private func succeed(_ token: Int) {
@@ -698,6 +752,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         retryCount = 0
         consecutiveGiveUps = 0
         networkNotReadyRetries = 0
+        // Invalidate any give-up cooldown timer still queued from an earlier
+        // failure. Without this it survives the success and fires minutes later,
+        // launching an unwanted attempt on a connection that is already working.
+        retryScheduleGeneration &+= 1
         nextAttemptAt = nil
         totalSuccesses += 1
         lastConnectedTime = Date()
