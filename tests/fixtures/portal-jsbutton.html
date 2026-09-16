@@ -1,0 +1,18 @@
+<!doctype html><html><body>
+<h1>SRM Wi-Fi Login</h1>
+<form id="loginForm" onsubmit="window.__formSubmitted=true; return false;">
+  <!-- A username field whose id contains "login" is completely ordinary on a
+       portal. Paired with a JS-driven submit control that carries no
+       type="submit" attribute (also completely ordinary), the selector
+       'input[id*="login" i]' reaches this text input before anything else. -->
+  <input type="text" id="loginId" name="login" placeholder="SRM ID">
+  <input type="password" id="pwd" name="password" placeholder="Password">
+  <button id="btnSubmit" onclick="window.__formSubmitted=true; return false;">Sign In</button>
+</form>
+<script>
+  window.__clicked = [];
+  document.querySelectorAll('input,button').forEach(function(el){
+    el.addEventListener('click', function(){ window.__clicked.push((el.tagName||'')+'#'+(el.id||'')); });
+  });
+</script>
+</body></html>

@@ -10,7 +10,22 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     @Published var currentSSID: String = ""
     @Published var isConnectedToSRM: Bool = false
 
-    private let srmSSIDs: Set<String> = ["SRMIST"]
+    /// Campus Wi-Fi is rarely a single exact name: SRMIST_5G, SRMIST-Student and
+    /// similar all front the same portal. This used to be an exact-match set
+    /// containing only "SRMIST", while AutoConnectManager judged the very same
+    /// SSID with `uppercased().contains("SRMIST")` — so the two halves of the app
+    /// disagreed about what network you were on, and every variant name was
+    /// silently never auto-connected. One rule, used by both.
+    ///
+    /// Matching loosely is safe here because being on a matching SSID only
+    /// decides whether to *look* for a portal. Credentials are still submitted
+    /// exclusively to the pinned HTTPS host in `trustedPortalHosts`, so an
+    /// access point that simply calls itself SRMIST-something cannot collect them.
+    private static let srmSSIDToken = "SRMIST"
+
+    static func isSRMNetwork(_ ssid: String) -> Bool {
+        ssid.uppercased().contains(srmSSIDToken)
+    }
 
     private var client: CWWiFiClient?
     private var locationManager: CLLocationManager?
@@ -49,24 +64,42 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         super.init()
         self.client = CWWiFiClient.shared()
 
-        // macOS 14+ requires location permission to read SSID
-        if #available(macOS 14.0, *) {
-            self.locationManager = CLLocationManager()
-            self.locationManager?.delegate = self
-            self.locationManager?.requestWhenInUseAuthorization()
-        }
+        // CoreWLAN has required Location Services authorization to return an SSID
+        // since macOS 10.15, not macOS 14. Gating this behind `#available(macOS
+        // 14.0, *)` meant that on macOS 13 — which this project's deployment
+        // target and README both claim to support — the app never created a
+        // location manager, never prompted, and so `interface.ssid()` returned
+        // nil forever. That is indistinguishable from "not on Wi-Fi", so SRMIST
+        // was never detected and auto-connect simply never fired. The deployment
+        // target is 13.0, so this is now unconditional.
+        self.locationManager = CLLocationManager()
+        self.locationManager?.delegate = self
+        self.locationManager?.requestWhenInUseAuthorization()
 
         setupNotifications()
         setupPathMonitor()
         updateNetworkStatus()
     }
 
-    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+    /// The modern spelling. `locationManager(_:didChangeAuthorization:)` has been
+    /// deprecated since macOS 11, and when both exist CoreLocation calls only
+    /// this one — so leaving just the old one around was a trap for whoever next
+    /// added the new one and silently disabled the old.
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        handleAuthorizationChange(manager.authorizationStatus)
+    }
+
+    private func handleAuthorizationChange(_ status: CLAuthorizationStatus) {
         // Without this permission ssid() returns nil forever, which is
         // indistinguishable from "not on Wi-Fi" — worth saying out loud.
-        if status == .denied || status == .restricted {
-            Logger.shared.log("Location permission denied — macOS won't report the Wi-Fi name, so SRMIST can't be detected automatically.")
-        } else {
+        switch status {
+        case .denied, .restricted:
+            Logger.shared.log("Location permission denied — macOS won't report the Wi-Fi name, so SRMIST can't be detected automatically. Grant it in System Settings › Privacy & Security › Location Services.")
+        case .notDetermined:
+            // Previously silent, so the one state where the app is waiting on the
+            // user looked exactly like the state where everything is fine.
+            Logger.shared.log("Waiting for Location Services permission — macOS needs it before it will report the Wi-Fi name.")
+        default:
             Logger.shared.debug("Location authorization status: \(status.rawValue)")
         }
         updateNetworkStatus()
@@ -119,6 +152,17 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
                 guard self.lastPathStatus != path.status else { return }
                 self.lastPathStatus = path.status
                 self.updateNetworkStatus()
+                // Only chase a login when the OS believes there is a usable path.
+                // This fired on every transition, including the transition *to*
+                // .unsatisfied — so losing the network kicked off a portal login
+                // against a link macOS had just declared dead, which fails
+                // instantly with -1009 and burns a rung of the retry ladder for
+                // nothing. The timers still cover the case where a path comes
+                // back without a status change.
+                guard path.status == .satisfied else {
+                    Logger.shared.debug("Network path is \(path.status) — not probing.")
+                    return
+                }
                 self.checkInternetIfNeeded()
             }
         }
@@ -217,7 +261,7 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         let previous = currentSSID
         currentSSID = raw
         networkGeneration &+= 1
-        let isSRM = srmSSIDs.contains(raw)
+        let isSRM = NetworkMonitor.isSRMNetwork(raw)
         isConnectedToSRM = isSRM
         Logger.shared.log("Wi-Fi: \(previous.isEmpty ? "none" : previous) → \(raw.isEmpty ? "none" : raw)")
 
@@ -230,7 +274,7 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
             lastProbeWasOnline = false
             warnedAboutTunnel = false
             checkInternetIfNeeded()
-        } else if srmSSIDs.contains(previous) {
+        } else if NetworkMonitor.isSRMNetwork(previous) {
             // Do not let a retry or a WebKit navigation that began on SRMIST run
             // on the next network. This is a normal network transition, not an
             // authentication failure.
