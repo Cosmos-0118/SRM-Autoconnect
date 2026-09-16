@@ -18,9 +18,9 @@ final class Logger: ObservableObject {
     @Published private(set) var logs: [LogEntry] = []
 
     /// Debug lines never enter the in-app log. The passive reachability poll alone
-    /// emits ~240 lines/hour; when those shared the 100-entry ring buffer with real
-    /// events, every line explaining a failure was evicted within ~25 minutes. They
-    /// still go to the log file, which is where post-mortems belong.
+    /// emits hundreds of lines an hour; when those shared the `maxEntries` ring
+    /// buffer with real events, every line explaining a failure was evicted within
+    /// minutes. They still go to the log file, which is where post-mortems belong.
     var debugEnabled = false
 
     static let stampFormatter: DateFormatter = {
@@ -53,6 +53,17 @@ final class Logger: ObservableObject {
 
     /// User-facing event. Shows in the popover's log tab.
     func log(_ message: String) { emit(message, toUI: true) }
+
+    /// Clears the in-app list only. The file log is the post-mortem record and
+    /// deliberately survives, so clearing the view can never destroy the
+    /// evidence someone is about to be asked for.
+    func clearUILogs() {
+        if Thread.isMainThread {
+            logs.removeAll()
+        } else {
+            DispatchQueue.main.async { self.logs.removeAll() }
+        }
+    }
 
     /// Diagnostic detail. File and stdout only, unless `debugEnabled`.
     func debug(_ message: String) { emit(message, toUI: debugEnabled) }

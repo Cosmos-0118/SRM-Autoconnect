@@ -34,8 +34,16 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     /// Reachability is a real network fetch. The 15s timer and the path monitor can
     /// otherwise fire back to back and probe twice for one event.
     private var lastReachabilityCheck: Date?
-    private let reachabilityMinInterval: TimeInterval = 10
+    /// Throttle for the reachability probe. While we are known-good there is
+    /// nothing to react to, so probing every 15s only burns battery, data, and
+    /// third-party rate limits — a full probe is four HTTPS requests, and at 15s
+    /// that is ~960 requests an hour, forever, for a machine that is already
+    /// online. Back off hard once online and tighten up the moment we are not.
+    private var reachabilityMinInterval: TimeInterval { lastProbeWasOnline ? 60 : 10 }
+    private var lastProbeWasOnline = false
     private var warnedAboutTunnel = false
+    /// Coalesces the several wake/unlock notifications macOS delivers together.
+    private var lastWakeHandledAt: Date?
 
     private override init() {
         super.init()
@@ -65,12 +73,24 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     }
 
     private func setupNotifications() {
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(handleWakeNotification),
-            name: NSWorkspace.didWakeNotification,
-            object: nil
-        )
+        // `didWakeNotification` alone is not enough. Over a 20-hour run it fired
+        // 7 times while the timers were observably stalled on 54 separate
+        // occasions: display sleep, screen lock and session switches all park
+        // the app without ever producing a full system-wake notification. Each
+        // of these is a moment where the Wi-Fi state may have changed under us,
+        // so treat them all as "re-check now".
+        for name in [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification,
+        ] {
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self,
+                selector: #selector(handleWakeNotification),
+                name: name,
+                object: nil
+            )
+        }
 
         // .common mode so both timers keep firing while the popover's menu tracking
         // run loop is active, instead of stalling whenever the UI is open.
@@ -127,6 +147,7 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
                 Logger.shared.debug("Ignoring reachability result from a previous Wi-Fi network.")
                 return
             }
+            self.lastProbeWasOnline = success
             guard !success else {
                 self.warnedAboutTunnel = false
                 return
@@ -145,6 +166,15 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     }
 
     @objc private func handleWakeNotification() {
+        // Waking usually delivers several of the observed notifications within a
+        // moment of each other. Without this, each one would cancel the retry the
+        // previous one had just re-armed, and they would stack up settle timers.
+        if let last = lastWakeHandledAt, Date().timeIntervalSince(last) < 3 {
+            Logger.shared.debug("Duplicate wake notification — already settling.")
+            return
+        }
+        lastWakeHandledAt = Date()
+
         Logger.shared.debug("System woke from sleep. Rechecking network in 5s...")
         // A retry scheduled before sleep would otherwise fire the instant the run
         // loop resumes, before the interface has reassociated — guaranteeing an
@@ -194,6 +224,10 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         if isSRM {
             // Joining is a genuine new-network event, so let it probe right away.
             lastReachabilityCheck = nil
+            // Whatever we knew about the previous network says nothing about this
+            // one; assume the worst so the probe runs on the tight interval until
+            // it has actually confirmed we are online here.
+            lastProbeWasOnline = false
             warnedAboutTunnel = false
             checkInternetIfNeeded()
         } else if srmSSIDs.contains(previous) {

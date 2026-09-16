@@ -88,10 +88,24 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// a quorum of ordinary hosts avoids that false positive — and requiring only a
     /// quorum, rather than all of them, means one host being blocked or down can't
     /// convince the app it is permanently offline and make it hammer the portal.
+    /// Each canary must be a *different operator*, or the quorum is theatre.
+    ///
+    /// api.github.com/zen used to be the third. It was silently useless: the
+    /// unauthenticated GitHub API allows 60 requests/hour per IP, and polling
+    /// every 15s issues 240/hour, so the app exhausted its own quota within
+    /// about fifteen minutes of every hour and then got HTTP 403 for the rest.
+    /// Measured across a 20-hour log: example.com 94% success, cloudflare.com
+    /// 94%, api.github.com 36%. On a campus NAT the shared public IP makes it
+    /// worse still. The practical effect was that a designed 2-of-3 quorum
+    /// degraded to 2-of-2 with no fault tolerance, so a single blip on either
+    /// surviving host read as "offline" and kicked off a pointless portal login.
+    ///
+    /// www.mozilla.org/robots.txt replaces it: 66 bytes, no rate limiting, and
+    /// an operator independent of Cloudflare, Apple and GitHub.
     private let canaries: [(url: URL, expect: String?)] = [
         (URL(string: "https://example.com")!, "Example Domain"),
         (URL(string: "https://cloudflare.com/cdn-cgi/trace")!, "fl="),
-        (URL(string: "https://api.github.com/zen")!, nil)
+        (URL(string: "https://www.mozilla.org/robots.txt")!, "user-agent")
     ]
     private let canaryQuorum = 2
 
@@ -598,7 +612,11 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             let body = data.flatMap { String(data: $0, encoding: .utf8) }
             guard (200...299).contains(status) else { return completion(false, body) }
             guard let expect else { return completion(true, body) }
-            completion(body?.contains(expect) == true, body)
+            // Case-insensitive: these are third-party pages we do not control, and
+            // a canary that silently starts failing because someone re-cased a
+            // header in their robots.txt is a canary that erodes the quorum
+            // without anyone noticing — which is exactly how the GitHub one rotted.
+            completion(body?.range(of: expect, options: .caseInsensitive) != nil, body)
         }.resume()
     }
 
