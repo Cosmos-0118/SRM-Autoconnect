@@ -18,6 +18,13 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>CFBundleDisplayName</key>
+	<string>SRM Autoconnect</string>
+	<!-- The binary is built for macOS 13; without this, macOS will happily
+	     launch the bundle on an older system and let it fail at dyld time
+	     instead of saying why. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
