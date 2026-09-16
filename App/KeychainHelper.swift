@@ -100,13 +100,21 @@ class KeychainHelper {
         return result as? Data
     }
 
-    func delete(service: String, account: String) {
+    /// Throws on real failures, the same as `save` and `read`. Deleting
+    /// something that was never there is success, not an error. The previous
+    /// version discarded the OSStatus entirely, so a delete refused by a locked
+    /// or ACL-protected keychain looked identical to one that worked — exactly
+    /// the silent-failure shape this file exists to avoid.
+    func delete(service: String, account: String) throws {
         let query = [
             kSecAttrService: service,
             kSecAttrAccount: account,
             kSecClass: kSecClassGenericPassword,
         ] as CFDictionary
 
-        SecItemDelete(query)
+        let status = SecItemDelete(query)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainFailure(operation: "Delete", status: status)
+        }
     }
 }
