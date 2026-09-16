@@ -7,8 +7,18 @@ struct SRMAutoconnectApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
+        // This app's entire UI is the popover built in AppDelegate; the Scene
+        // exists only because `App` requires one. A `Settings` scene, though,
+        // also installs a ⌘, key equivalent, so pressing it while the popover
+        // had focus opened an empty 900x450 window and dismissed the popover —
+        // the app's real Settings tab is *inside* that popover. Removing the
+        // .appSettings command group takes the shortcut and its menu item away
+        // and leaves the empty scene unreachable.
         Settings {
             EmptyView()
+        }
+        .commands {
+            CommandGroup(replacing: .appSettings) { }
         }
     }
 }
@@ -68,7 +78,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItem = NSStatusBar.system.statusItem(withLength: CGFloat(NSStatusItem.variableLength))
         
         if let button = self.statusItem.button {
-            button.action = #selector(togglePopover(_:))
+            button.action = #selector(statusItemClicked(_:))
+            // Right-click was simply dead, and Quit lives inside the popover's
+            // Settings tab — so if the popover ever failed to open there was no
+            // way to quit the app at all short of Activity Monitor.
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             // Without an explicit target this relies on nil-target dispatch
             // finding the app delegate at the end of the responder chain. That
             // does work, but it also means any responder ahead of us that
@@ -118,6 +132,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         button.toolTip = description
     }
 
+
+    @objc func statusItemClicked(_ sender: AnyObject?) {
+        let event = NSApp.currentEvent
+        let isRightClick = event?.type == .rightMouseUp
+            || (event?.modifierFlags.contains(.control) ?? false)
+        if isRightClick {
+            showContextMenu()
+        } else {
+            togglePopover(sender)
+        }
+    }
+
+    private func showContextMenu() {
+        let menu = NSMenu()
+        let status = NetworkMonitor.shared.currentSSID.isEmpty
+            ? "Not on Wi-Fi"
+            : "Wi-Fi: \(NetworkMonitor.shared.currentSSID)"
+        let statusItemEntry = NSMenuItem(title: status, action: nil, keyEquivalent: "")
+        statusItemEntry.isEnabled = false
+        menu.addItem(statusItemEntry)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Open SRM Autoconnect", action: #selector(togglePopover(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Force Connect", action: #selector(forceConnect), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Reveal Log File in Finder", action: #selector(revealLogFile), keyEquivalent: ""))
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit SRM Autoconnect", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        for item in menu.items where item.action != nil && item.action != #selector(NSApplication.terminate(_:)) {
+            item.target = self
+        }
+        // Attaching the menu to the status item would make it open on *left*
+        // click too and suppress the popover entirely, so pop it manually and
+        // detach immediately.
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func forceConnect() {
+        AutoConnectManager.shared.attemptLogin(force: true)
+    }
+
+    @objc private func revealLogFile() {
+        let path = Logger.shared.logFilePath
+        guard path != "(unavailable)" else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
 
     @objc func togglePopover(_ sender: AnyObject?) {
         if let button = self.statusItem.button {

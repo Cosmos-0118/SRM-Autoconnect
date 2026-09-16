@@ -3,8 +3,23 @@ import SwiftUI
 struct DashboardView: View {
     @ObservedObject var autoConnect = AutoConnectManager.shared
     @ObservedObject var networkMonitor = NetworkMonitor.shared
-    
+
+    private func bannerTitle(_ result: AutoConnectManager.LoginResult) -> String {
+        switch result {
+        case .success: return "CONNECTED"
+        case .alreadyOnline: return "ALREADY ONLINE"
+        case .failure: return "LOGIN FAILED"
+        }
+    }
+
     var body: some View {
+        // Force Connect is pinned below the scroll area rather than sitting at
+        // the end of it. The popover is a fixed 300x400, and with the NEXT
+        // ATTEMPT row, the CONNECTING spinner and the result banner all present
+        // the content runs past 400pt — so the one button the user came here to
+        // press was below the fold precisely when the app was failing and they
+        // most wanted it.
+        VStack(spacing: 0) {
         ScrollView {
         VStack(spacing: 16) {
             // Header
@@ -96,37 +111,60 @@ struct DashboardView: View {
             // Last attempt's outcome — otherwise a login attempt resolves with nothing
             // visible once the spinner above disappears.
             if let result = autoConnect.lastResult {
-                HStack(spacing: 6) {
-                    Image(systemName: result == .success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    Text(result == .success ? "CONNECTED" : "LOGIN FAILED — CHECK CREDENTIALS")
+                VStack(spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: result == .failure ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        Text(bannerTitle(result))
+                    }
+                    .font(Theme.mono(12, weight: .semibold))
+                    // The banner used to read "LOGIN FAILED — CHECK CREDENTIALS"
+                    // for every failure, including the many that have nothing to
+                    // do with credentials — portal unreachable, network not up
+                    // yet, attempt timed out. Show the actual reason.
+                    if result == .failure, let reason = autoConnect.lastFailureReason {
+                        Text(reason.uppercased())
+                            .font(Theme.mono(9))
+                            .foregroundColor(.red.opacity(0.85))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .font(Theme.mono(12, weight: .semibold))
-                .foregroundColor(result == .success ? Theme.green : .red)
+                .foregroundColor(result == .failure ? .red : Theme.green)
                 .frame(maxWidth: .infinity)
                 .padding(8)
-                .terminalPanel(tint: result == .success ? Theme.green : .red)
+                .terminalPanel(tint: result == .failure ? .red : Theme.green)
                 .padding(.horizontal)
                 .transition(.opacity)
             }
 
-            // Force Connect Button
-            Button(action: {
-                autoConnect.attemptLogin(force: true)
-            }) {
-                Text("> FORCE CONNECT <")
-                    .font(Theme.mono(13, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(10)
-                    .background(Theme.amber)
-                    .foregroundColor(.black)
-                    .cornerRadius(6)
-                    .shadow(color: Theme.amber.opacity(0.5), radius: 5, x: 0, y: 0)
-            }
-            .buttonStyle(PlainButtonStyle())
-            .padding(.horizontal)
-            .padding(.bottom, 16)
         }
         .animation(.easeOut(duration: 0.2), value: autoConnect.lastResult)
+        .padding(.bottom, 12)
+        }
+
+        // Force Connect Button — outside the ScrollView, always reachable.
+        Button(action: {
+            autoConnect.attemptLogin(force: true)
+        }) {
+            Text(autoConnect.isConnecting ? "> CONNECTING... <" : "> FORCE CONNECT <")
+                .font(Theme.mono(13, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(10)
+                .background(autoConnect.isConnecting ? Theme.amber.opacity(0.45) : Theme.amber)
+                .foregroundColor(.black)
+                .cornerRadius(6)
+                .shadow(color: Theme.amber.opacity(0.5), radius: 5, x: 0, y: 0)
+        }
+        .buttonStyle(PlainButtonStyle())
+        // Pressing it mid-attempt was a completely silent no-op: startLogin()
+        // returns early on `isConnecting`, so nothing on screen acknowledged the
+        // click at all. Say so by disabling it instead.
+        .disabled(autoConnect.isConnecting)
+        .help(autoConnect.isConnecting ? "A login attempt is already running" : "Ignore the current backoff and try to log in now")
+        .accessibilityLabel("Force connect")
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
