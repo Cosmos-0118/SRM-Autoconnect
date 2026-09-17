@@ -45,10 +45,19 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     /// there is no added latency on an actual join.
     private var pendingEmptyReads = 0
     private let emptyReadsToConfirm = 3
+    /// The displayed SSID is deliberately retained across a couple of nil reads,
+    /// but a nil read still means this instant is unsafe for new network work.
+    /// Keeping these concepts separate prevents the debounce from launching a
+    /// portal load while the interface is roaming or has no route.
+    private var latestSSIDReadWasUsable = false
 
     /// Reachability is a real network fetch. The 15s timer and the path monitor can
     /// otherwise fire back to back and probe twice for one event.
     private var lastReachabilityCheck: Date?
+    private var reachabilityProbeInFlight = false
+    private var consecutiveOfflineProbes = 0
+    private var offlineConfirmationWorkItem: DispatchWorkItem?
+    private let offlineConfirmationDelay: TimeInterval = 3
     /// Throttle for the reachability probe. While we are known-good there is
     /// nothing to react to, so probing every 15s only burns battery, data, and
     /// third-party rate limits — a full probe is four HTTPS requests, and at 15s
@@ -59,6 +68,15 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     private var warnedAboutTunnel = false
     /// Coalesces the several wake/unlock notifications macOS delivers together.
     private var lastWakeHandledAt: Date?
+
+    /// Automatic attempts require both a retained SRM identity and evidence that
+    /// the interface is usable right now. A force attempt intentionally bypasses
+    /// this gate so the dashboard button remains a useful diagnostic escape hatch.
+    var isReadyForAutomaticLogin: Bool {
+        isConnectedToSRM
+            && latestSSIDReadWasUsable
+            && lastPathStatus == .satisfied
+    }
 
     private override init() {
         super.init()
@@ -151,6 +169,17 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
                 // list, gateway, etc.), not just real connectivity transitions.
                 guard self.lastPathStatus != path.status else { return }
                 self.lastPathStatus = path.status
+                // A result launched on the old path must not be accepted after the
+                // interface loses and regains a route, even if the SSID never
+                // changes during that interval.
+                self.networkGeneration &+= 1
+                self.consecutiveOfflineProbes = 0
+                self.offlineConfirmationWorkItem?.cancel()
+                self.offlineConfirmationWorkItem = nil
+                self.lastReachabilityCheck = nil
+                if path.status != .satisfied {
+                    AutoConnectManager.shared.cancelAutomaticLoginForReadinessLoss()
+                }
                 self.updateNetworkStatus()
                 // Only chase a login when the OS believes there is a usable path.
                 // This fired on every transition, including the transition *to*
@@ -175,8 +204,9 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     /// flight, or while the manager is backing off.
     func checkInternetIfNeeded() {
         dispatchPrecondition(condition: .onQueue(.main))
-        guard isConnectedToSRM else { return }
+        guard isReadyForAutomaticLogin else { return }
         guard !AutoConnectManager.shared.isConnecting else { return }
+        guard !reachabilityProbeInFlight else { return }
         if let next = AutoConnectManager.shared.nextAttemptAt, next > Date() { return }
 
         if let last = lastReachabilityCheck, Date().timeIntervalSince(last) < reachabilityMinInterval {
@@ -184,18 +214,42 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         }
         lastReachabilityCheck = Date()
         let generation = networkGeneration
+        reachabilityProbeInFlight = true
 
-        AutoConnectManager.shared.probeInternet { [weak self] success in
+        AutoConnectManager.shared.probeReachability(quiet: true) { [weak self] state in
             guard let self else { return }
-            guard self.isConnectedToSRM, self.networkGeneration == generation else {
+            self.reachabilityProbeInFlight = false
+            guard self.isReadyForAutomaticLogin, self.networkGeneration == generation else {
                 Logger.shared.debug("Ignoring reachability result from a previous Wi-Fi network.")
+                // If the path recovered while this old probe was still in flight,
+                // the recovery-triggered check was coalesced by the in-flight
+                // guard. Replace it now instead of waiting for the 15s timer (or a
+                // stale 60s online throttle) to notice.
+                if self.isReadyForAutomaticLogin {
+                    self.lastReachabilityCheck = nil
+                    DispatchQueue.main.async { [weak self] in self?.checkInternetIfNeeded() }
+                }
                 return
             }
-            self.lastProbeWasOnline = success
-            guard !success else {
+            guard !state.online else {
+                self.consecutiveOfflineProbes = 0
+                self.offlineConfirmationWorkItem?.cancel()
+                self.offlineConfirmationWorkItem = nil
+                self.lastProbeWasOnline = true
                 self.warnedAboutTunnel = false
                 return
             }
+            self.lastProbeWasOnline = false
+
+            self.consecutiveOfflineProbes += 1
+            if self.consecutiveOfflineProbes == 1 {
+                Logger.shared.debug("Reachability failed once (\(state.detail)) — confirming before portal login.")
+                self.scheduleOfflineConfirmation(for: generation)
+                return
+            }
+
+            self.offlineConfirmationWorkItem?.cancel()
+            self.offlineConfirmationWorkItem = nil
             // A VPN/tunnel interface (e.g. Cloudflare WARP) can stop captive-portal
             // traffic from ever reaching the local gateway. Say so once per outage
             // rather than on every failed poll.
@@ -204,9 +258,23 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
                 self.warnedAboutTunnel = true
                 Logger.shared.log("A VPN/tunnel is active (e.g. Cloudflare WARP) — it can block captive portal login. Pause it if login keeps failing.")
             }
-            Logger.shared.debug("On SRMIST with no internet — triggering login.")
-            AutoConnectManager.shared.attemptLogin()
+            Logger.shared.debug("On SRMIST with confirmed no internet — triggering login.")
+            AutoConnectManager.shared.attemptLogin(afterConfirmedOutage: state)
         }
+    }
+
+    private func scheduleOfflineConfirmation(for generation: Int) {
+        offlineConfirmationWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.networkGeneration == generation,
+                  self.isReadyForAutomaticLogin else { return }
+            self.offlineConfirmationWorkItem = nil
+            self.lastReachabilityCheck = nil
+            self.checkInternetIfNeeded()
+        }
+        offlineConfirmationWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + offlineConfirmationDelay, execute: work)
     }
 
     @objc private func handleWakeNotification() {
@@ -245,6 +313,20 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         }
 
         let raw = interface.ssid() ?? ""
+        let observationWasUsable = latestSSIDReadWasUsable
+        latestSSIDReadWasUsable = !raw.isEmpty
+        if observationWasUsable != latestSSIDReadWasUsable {
+            // Invalidate probes launched on the other side of this transition.
+            // The retained display SSID may not change, but the network state that
+            // owns an asynchronous result certainly did.
+            networkGeneration &+= 1
+            consecutiveOfflineProbes = 0
+            offlineConfirmationWorkItem?.cancel()
+            offlineConfirmationWorkItem = nil
+            if !latestSSIDReadWasUsable {
+                AutoConnectManager.shared.cancelAutomaticLoginForReadinessLoss()
+            }
+        }
 
         if raw.isEmpty {
             guard !currentSSID.isEmpty else { return }
@@ -256,11 +338,21 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         }
         pendingEmptyReads = 0
 
-        guard raw != currentSSID else { return }
+        guard raw != currentSSID else {
+            if !observationWasUsable && latestSSIDReadWasUsable {
+                Logger.shared.debug("Wi-Fi observation recovered on '\(raw)' — rechecking connectivity.")
+                lastReachabilityCheck = nil
+                checkInternetIfNeeded()
+            }
+            return
+        }
 
         let previous = currentSSID
         currentSSID = raw
         networkGeneration &+= 1
+        consecutiveOfflineProbes = 0
+        offlineConfirmationWorkItem?.cancel()
+        offlineConfirmationWorkItem = nil
         let isSRM = NetworkMonitor.isSRMNetwork(raw)
         isConnectedToSRM = isSRM
         Logger.shared.log("Wi-Fi: \(previous.isEmpty ? "none" : previous) → \(raw.isEmpty ? "none" : raw)")
