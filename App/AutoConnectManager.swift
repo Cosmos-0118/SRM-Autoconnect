@@ -45,6 +45,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     // failure scheduling its own retry, so the retry chains multiplied instead of
     // running one at a time.
     private var currentAttempt: Int = 0
+    private var currentAttemptWasForced = false
 
     private var retryCount = 0
     /// Invalidates delayed retry closures. Merely clearing `nextAttemptAt` is not
@@ -168,14 +169,28 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// `force` is the Force Connect button: it ignores any active backoff and resets
     /// the retry chain. Automatic triggers must not, or they defeat the backoff.
     func attemptLogin(force: Bool = false) {
+        attemptLogin(force: force, knownReachability: nil)
+    }
+
+    /// NetworkMonitor has already performed the expensive reachability probe when
+    /// it calls this entry point. Reusing that result avoids immediately issuing
+    /// the same four requests again and mistaking one short network flap for two
+    /// independent confirmations that the internet is down.
+    func attemptLogin(afterConfirmedOutage state: Reachability) {
+        attemptLogin(force: false, knownReachability: state)
+    }
+
+    private func attemptLogin(force: Bool, knownReachability: Reachability?) {
         if Thread.isMainThread {
-            startLogin(force: force)
+            startLogin(force: force, knownReachability: knownReachability)
         } else {
-            DispatchQueue.main.async { self.startLogin(force: force) }
+            DispatchQueue.main.async {
+                self.startLogin(force: force, knownReachability: knownReachability)
+            }
         }
     }
 
-    private func startLogin(force: Bool) {
+    private func startLogin(force: Bool, knownReachability: Reachability?) {
         // All mutable attempt state lives on the main thread, so the guard below and
         // the `isConnecting = true` that follows are atomic with respect to each
         // other. The old code checked the guard, then hopped to main to set the flag
@@ -190,8 +205,8 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // Retry timers call this same entry point. Without this guard, an
         // automatic retry scheduled on SRMIST continued to load the portal after
         // the computer had roamed to a hotspot or a home network.
-        guard force || NetworkMonitor.shared.isConnectedToSRM else {
-            Logger.shared.debug("Not on SRMIST — skipping automatic portal login.")
+        guard force || NetworkMonitor.shared.isReadyForAutomaticLogin else {
+            Logger.shared.debug("SRMIST network is not ready — skipping automatic portal login.")
             return
         }
 
@@ -241,6 +256,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         loginSubmittedForAttempt = -1
         portalFailures = []
         sawNetworkNotReadyInAttempt = false
+        currentAttemptWasForced = force
         isConnecting = true
         nextAttemptAt = nil
 
@@ -259,28 +275,36 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // A captive portal only exists until you are actually online. If some other
         // path already has real internet, running the login sequence is pointless
         // and burns the retry chain for nothing.
-        probeReachability(quiet: true) { [weak self] state in
-            guard let self, self.isLive(token) else { return }
-
-            if state.online {
-                Logger.shared.debug("Internet already reachable — no portal login needed.")
-                self.finish(token)
-                self.retryCount = 0
-                self.consecutiveGiveUps = 0
-                self.networkNotReadyRetries = 0
-                // Deliberately not a success: nothing was logged in, so counting
-                // it would inflate the Success metric and move LAST CONNECTED
-                // every time the poll happened to run while things were fine.
-                self.lastFailureReason = nil
-                self.showResult(.alreadyOnline)
-                return
+        if let knownReachability {
+            continueLogin(token, reachability: knownReachability)
+        } else {
+            probeReachability(quiet: true) { [weak self] state in
+                self?.continueLogin(token, reachability: state)
             }
-
-            Logger.shared.log(state.captivePortal
-                ? "Captive portal detected. Logging in..."
-                : "No internet (\(state.detail)). Starting portal login...")
-            self.loadPortal(token)
         }
+    }
+
+    private func continueLogin(_ token: Int, reachability state: Reachability) {
+        guard isLive(token) else { return }
+
+        if state.online {
+            Logger.shared.debug("Internet already reachable — no portal login needed.")
+            finish(token)
+            retryCount = 0
+            consecutiveGiveUps = 0
+            networkNotReadyRetries = 0
+            // Deliberately not a success: nothing was logged in, so counting
+            // it would inflate the Success metric and move LAST CONNECTED
+            // every time the poll happened to run while things were fine.
+            lastFailureReason = nil
+            showResult(.alreadyOnline)
+            return
+        }
+
+        Logger.shared.log(state.captivePortal
+            ? "Captive portal detected. Logging in..."
+            : "No internet (\(state.detail)). Starting portal login...")
+        loadPortal(token)
     }
 
     // MARK: - Portal navigation
@@ -732,6 +756,22 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         retryCount = 0
         consecutiveGiveUps = 0
         networkNotReadyRetries = 0
+    }
+
+    /// A retained SSID is not proof that the interface is usable during roaming.
+    /// Abort an automatic attempt as soon as NetworkMonitor loses a usable SSID
+    /// observation or satisfied path. This is a cancellation, not a failed login:
+    /// no portal or credential decision was actually reached. Force Connect is
+    /// deliberately exempt because the user explicitly asked for that diagnostic
+    /// attempt even if the monitor currently distrusts the network state.
+    func cancelAutomaticLoginForReadinessLoss() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { self.cancelAutomaticLoginForReadinessLoss() }
+            return
+        }
+        guard isConnecting, !currentAttemptWasForced else { return }
+        finish(currentAttempt)
+        Logger.shared.debug("Network readiness was lost — cancelled automatic portal login in progress.")
     }
 
     /// Called when the user saves or removes credentials. Without this, fixing a

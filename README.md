@@ -14,7 +14,7 @@ While connected to `SRMIST`, the app probes external sites to decide whether the
 
 - `https://example.com` contains `Example Domain`
 - `https://cloudflare.com/cdn-cgi/trace` contains `fl=`
-- `https://api.github.com/zen` responds successfully
+- `https://www.mozilla.org/robots.txt` contains `user-agent`
 
 It also checks Apple's captive-portal page only to tell a captive-portal interception from a general outage. An Apple connectivity response alone is never treated as proof of internet access.
 
