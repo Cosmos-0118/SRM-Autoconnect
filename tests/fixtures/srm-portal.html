@@ -1,0 +1,23 @@
+<!doctype html><html><body>
+<div id="LoginUserPassword">
+  <form id="LoginUserPassword_auth_form">
+    <input id="LoginUserPassword_auth_realm" type="hidden" value="passwordRealm">
+    <input type="text" id="LoginUserPassword_auth_username" cpname="username">
+    <input type="password" id="LoginUserPassword_auth_password" cpname="password">
+  </form>
+</div>
+<!-- The real SRM portal uses this anchor outside the form, but its click handler
+     delegates to oAuthentication.submitActiveForm(). -->
+<a id="UserCheck_Login_Button" onclick="oAuthentication.submitActiveForm()">Log In</a>
+<script>
+  window.__clicked = [];
+  window.__handlerCalled = false;
+  window.oAuthentication = {
+    submitActiveForm: function() {
+      window.__handlerCalled = true;
+      window.__formSubmitted = true;
+      window.__clicked.push('PORTAL_HANDLER');
+    }
+  };
+</script>
+</body></html>

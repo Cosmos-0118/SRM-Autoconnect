@@ -70,13 +70,26 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// genuinely down got hammered continuously.
     private let giveUpCooldowns: [TimeInterval] = [60, 180, 300, 600]
     private var consecutiveGiveUps = 0
-    /// Whole-attempt watchdog: no attempt may occupy `isConnecting` longer than this.
-    private let attemptHardTimeout: TimeInterval = 45
+    /// An attempt has phase-specific watchdogs below. This is only the final
+    /// safety net for an unexpected WebKit/JavaScript state that never reports
+    /// its own outcome.
+    private let attemptHardTimeout: TimeInterval = 60
+    private let portalNavigationTimeout: TimeInterval = 18
+    private let loginFormTimeout: TimeInterval = 25
     /// How long to stop retrying when the blocker is the user, not the network.
     private let missingCredentialsBackoff: TimeInterval = 300
 
     private var webView: WKWebView!
     private var hostWindow: NSWindow!
+
+    private enum AttemptPhase: Equatable {
+        case idle
+        case preflight
+        case loadingPortal
+        case waitingForLoginForm
+        case verifying
+    }
+    private var attemptPhase: AttemptPhase = .idle
 
     /// Credentials are submitted only to the known HTTPS portal. An HTTP captive
     /// portal fallback can be attacker-controlled, so it must never be allowed to
@@ -87,6 +100,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private let trustedPortalHosts: Set<String> = ["iac.srmist.edu.in"]
     private var portalIndex = 0
     private var navigationAttempts: [ObjectIdentifier: Int] = [:]
+    private var activePortalNavigation: ObjectIdentifier?
     private var injectedNavigation: ObjectIdentifier?
     private var loginSubmittedForAttempt = -1
     /// Per-candidate errors for the attempt in progress, so a final "portal
@@ -252,11 +266,13 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         let token = currentAttempt
         portalIndex = 0
         navigationAttempts.removeAll(keepingCapacity: true)
+        activePortalNavigation = nil
         injectedNavigation = nil
         loginSubmittedForAttempt = -1
         portalFailures = []
         sawNetworkNotReadyInAttempt = false
         currentAttemptWasForced = force
+        attemptPhase = .preflight
         isConnecting = true
         nextAttemptAt = nil
 
@@ -316,19 +332,49 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         }
         let url = portalCandidates[portalIndex]
         Logger.shared.debug("Loading portal candidate \(portalIndex + 1)/\(portalCandidates.count): \(url.absoluteString)")
+        attemptPhase = .loadingPortal
         webView.stopLoading()
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 15
         if let navigation = webView.load(request) {
-            navigationAttempts[ObjectIdentifier(navigation)] = token
+            let navigationID = ObjectIdentifier(navigation)
+            navigationAttempts[navigationID] = token
+            activePortalNavigation = navigationID
+            armPortalNavigationTimeout(token, navigationID: navigationID)
+        } else {
+            advancePortal(token, reason: "WebKit could not start navigation")
+        }
+    }
+
+    private func armPortalNavigationTimeout(_ token: Int, navigationID: ObjectIdentifier) {
+        after(portalNavigationTimeout, token) { [weak self] in
+            guard let self,
+                  self.attemptPhase == .loadingPortal,
+                  self.activePortalNavigation == navigationID else { return }
+            self.advancePortal(
+                token,
+                navigationID: navigationID,
+                reason: "navigation timed out after \(Int(self.portalNavigationTimeout))s"
+            )
         }
     }
 
     /// Move to the next portal URL rather than failing the whole attempt: the first
     /// candidate failing is the normal case behind a portal that breaks TLS.
-    private func advancePortal(_ token: Int, reason: String) {
+    private func advancePortal(_ token: Int, navigationID: ObjectIdentifier? = nil, reason: String) {
         guard isLive(token) else { return }
+        guard portalIndex < portalCandidates.count else {
+            fail(token, "no portal URL reachable")
+            return
+        }
+        if let navigationID {
+            guard navigationAttempts[navigationID] == token else { return }
+            navigationAttempts.removeValue(forKey: navigationID)
+        } else if let activePortalNavigation {
+            navigationAttempts.removeValue(forKey: activePortalNavigation)
+        }
+        activePortalNavigation = nil
         let host = portalCandidates[portalIndex].host ?? "candidate \(portalIndex + 1)"
         portalFailures.append("\(host): \(reason)")
         Logger.shared.debug("Portal candidate \(portalIndex + 1) failed (\(reason)).")
@@ -358,13 +404,18 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         }
 
         guard isTrustedPortalURL(webView.url) else {
-            advancePortal(token, reason: "redirected outside the trusted HTTPS SRM portal")
+            advancePortal(
+                token,
+                navigationID: ObjectIdentifier(navigation),
+                reason: "redirected outside the trusted HTTPS SRM portal"
+            )
             return
         }
 
         let navigationID = ObjectIdentifier(navigation)
         guard injectedNavigation != navigationID else { return }
         injectedNavigation = navigationID
+        attemptPhase = .waitingForLoginForm
         injectLogin(token)
     }
 
@@ -372,7 +423,12 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         guard isConnecting else { return }
         // This covers same-attempt JavaScript/meta redirects, whose WKNavigation
         // differs from the explicit `webView.load` navigation.
-        navigationAttempts[ObjectIdentifier(navigation)] = currentAttempt
+        let navigationID = ObjectIdentifier(navigation)
+        navigationAttempts[navigationID] = currentAttempt
+        activePortalNavigation = navigationID
+        if attemptPhase == .loadingPortal {
+            armPortalNavigationTimeout(currentAttempt, navigationID: navigationID)
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -411,7 +467,11 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             || ns.code == NSURLErrorSecureConnectionFailed {
             Logger.shared.debug("TLS rejected by the portal gateway.")
         }
-        advancePortal(token, reason: "\(phase): \(error.localizedDescription)")
+        advancePortal(
+            token,
+            navigationID: ObjectIdentifier(navigation),
+            reason: "\(phase): \(error.localizedDescription)"
+        )
     }
 
     private func belongsToLiveAttempt(_ navigation: WKNavigation!, token: Int) -> Bool {
@@ -506,13 +566,59 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             return t.indexOf('logout') >= 0 || t.indexOf('sign out') >= 0 || t.indexOf('you are signed in') >= 0;
           }
 
+          function isVisible(el) {
+            if (!el) return false;
+            try {
+              var style = window.getComputedStyle(el);
+              return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+            } catch (e) { return true; }
+          }
+
+          function isClickable(el) {
+            var tag = (el.tagName || '').toLowerCase();
+            if (!isVisible(el) || el.disabled) return false;
+            if (tag === 'button' || tag === 'a') return true;
+            if (tag !== 'input') return false;
+            var t = (el.type || '').toLowerCase();
+            return t === 'submit' || t === 'button' || t === 'image' || t === 'reset';
+          }
+
+          function findSubmit(scope) {
+            // SRM's live portal deliberately does not submit this form as HTML.
+            // Its login action encrypts the password and sends an AJAX request
+            // through this handler. Prefer the handler itself below; this selector
+            // is the fallback for portal versions that expose only the anchor.
+            var selectors = [
+              '#UserCheck_Login_Button',
+              '[onclick*="submitActiveForm"]',
+              'input[type="submit"]', 'button[type="submit"]',
+              'input[id*="login" i]', 'button[id*="login" i]',
+              'a[id*="login" i]', 'a[name*="login" i]',
+              'input[name*="login" i]', 'input[value*="login" i]',
+              'input[id*="submit" i]', 'button[id*="submit" i]',
+              'a[id*="submit" i]', 'input[type="button"]', 'button'
+            ];
+            var roots = [scope];
+            if (scope !== document) roots.push(document);
+            for (var r = 0; r < roots.length; r++) {
+              for (var s = 0; s < selectors.length; s++) {
+                var found;
+                try { found = roots[r].querySelectorAll(selectors[s]); } catch (e) { continue; }
+                for (var j = 0; j < found.length; j++) {
+                  if (isClickable(found[j])) return found[j];
+                }
+              }
+            }
+            return null;
+          }
+
           var attempts = 0;
           var timer = setInterval(function() {
             attempts++;
             var pass = document.querySelector('input[type="password"]');
             if (!pass) {
               if (looksLoggedIn()) { clearInterval(timer); report('already', document.title); return; }
-              if (attempts > 24) { clearInterval(timer); report('nofields', 'no password field after 12s'); }
+              if (attempts > 48) { clearInterval(timer); report('nofields', 'no password field after 24s'); }
               return;
             }
             // Scope to the password field's own form so a stray search box or a
@@ -525,7 +631,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
               if (t === 'text' || t === 'email' || t === 'tel') { user = inputs[i]; break; }
             }
             if (!user) {
-              if (attempts > 24) { clearInterval(timer); report('nofields', 'no username field'); }
+              if (attempts > 48) { clearInterval(timer); report('nofields', 'no username field after 24s'); }
               return;
             }
 
@@ -533,50 +639,37 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             setValue(user, \(jsLiteral(creds.username)));
             setValue(pass, \(jsLiteral(creds.password)));
 
-            // querySelector with a comma-separated list returns the first match in
-            // DOCUMENT order, not the first matching selector — so the old single
-            // call ending in ', button' could pick any unrelated button that
-            // happened to appear earlier in the page. Walk the list in priority
-            // order instead, one selector at a time.
-            var selectors = [
-              'input[type="submit"]', 'button[type="submit"]',
-              'input[id*="login" i]', 'button[id*="login" i]',
-              'input[name*="login" i]', 'input[value*="login" i]',
-              'input[id*="submit" i]', 'button[id*="submit" i]',
-              'input[type="button"]', 'button'
-            ];
-            // Several of those selectors match *text inputs* as readily as
-            // buttons, and portal login forms are exactly where that bites:
-            // a username field with id="loginId" or name="login" is completely
-            // ordinary, so 'input[id*="login" i]' would pick the field we had
-            // just typed the username into. Clicking a text input does nothing,
-            // the form is never submitted, and the attempt then dies on the
-            // verification timeout looking like a rejected password. Require the
-            // element to actually be clickable before accepting it.
-            function isClickable(el) {
-              var tag = (el.tagName || '').toLowerCase();
-              if (tag === 'button') return true;
-              if (tag !== 'input') return false;
-              var t = (el.type || '').toLowerCase();
-              return t === 'submit' || t === 'button' || t === 'image' || t === 'reset';
-            }
-            var btn = null;
-            for (var s = 0; s < selectors.length && !btn; s++) {
-              var found;
-              try { found = scope.querySelectorAll(selectors[s]); } catch (e) { continue; }
-              for (var j = 0; j < found.length; j++) {
-                if (!found[j].disabled && isClickable(found[j])) { btn = found[j]; break; }
+            // The SRM portal's normal path is not a DOM form submit. Calling
+            // this handler is what applies its RSA password encryption and posts
+            // to its Login endpoint. Native form.submit() would bypass both and
+            // can make valid credentials look rejected.
+            try {
+              if (window.oAuthentication && typeof window.oAuthentication.submitActiveForm === 'function') {
+                window.oAuthentication.submitActiveForm();
+                report('submitted', 'oAuthentication.submitActiveForm');
+                return;
               }
-            }
+            } catch (e) {}
+
+            var btn = findSubmit(scope);
             // Report what was clicked by its identity, never by its value: on a
             // form where the chosen control carries user-entered text, that value
             // would be written verbatim into the on-disk log.
             if (btn) { btn.click(); report('submitted', (btn.tagName || '') + '#' + (btn.id || '') + '.' + (btn.type || '')); }
-            else if (pass.form) { pass.form.submit(); report('submitted', 'form.submit()'); }
+            else if (pass.form) {
+              if (typeof pass.form.requestSubmit === 'function') pass.form.requestSubmit();
+              else pass.form.submit();
+              report('submitted', 'native form request');
+            }
             else { report('nosubmit', 'no submit control found'); }
           }, 500);
         })();
         """
+
+        after(loginFormTimeout, token) { [weak self] in
+            guard let self, self.attemptPhase == .waitingForLoginForm else { return }
+            self.fail(token, "login form did not become ready after \(Int(self.loginFormTimeout))s")
+        }
 
         webView.evaluateJavaScript(js) { [weak self] _, error in
             guard let self, self.isLive(token) else { return }
@@ -600,10 +693,12 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         switch stage {
         case "submitted":
             loginSubmittedForAttempt = token
+            attemptPhase = .verifying
             Logger.shared.debug("Credentials submitted via '\(detail)'. Verifying...")
             after(3, token) { self.verify(token, remaining: 5) }
         case "already":
             loginSubmittedForAttempt = token
+            attemptPhase = .verifying
             Logger.shared.debug("Portal reports an existing session. Verifying...")
             verify(token, remaining: 3)
         case "nofields":
@@ -621,6 +716,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// takes an unpredictable moment to actually open after accepting the form, and
     /// one early probe was being counted as an outright login failure.
     private func verify(_ token: Int, remaining: Int) {
+        attemptPhase = .verifying
         probeReachability(quiet: true) { [weak self] state in
             guard let self, self.isLive(token) else { return }
             if state.online {
@@ -724,7 +820,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private func finish(_ token: Int) {
         guard isLive(token) else { return }
         currentAttempt &+= 1
+        attemptPhase = .idle
         isConnecting = false
+        navigationAttempts.removeAll(keepingCapacity: true)
+        activePortalNavigation = nil
         webView.stopLoading()
     }
 
@@ -769,9 +868,23 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             DispatchQueue.main.async { self.cancelAutomaticLoginForReadinessLoss() }
             return
         }
-        guard isConnecting, !currentAttemptWasForced else { return }
-        finish(currentAttempt)
-        Logger.shared.debug("Network readiness was lost — cancelled automatic portal login in progress.")
+        // A user-forced attempt is deliberately allowed to finish so the button
+        // remains a useful diagnostic escape hatch. Automatic work, including a
+        // queued retry with no attempt currently in flight, must pause here.
+        guard !currentAttemptWasForced || !isConnecting else { return }
+        if isConnecting {
+            finish(currentAttempt)
+            Logger.shared.debug("Network readiness was lost — cancelled automatic portal login in progress.")
+        }
+
+        // A retry timer scheduled while the path was usable must not consume a
+        // retry rung while the interface is down. The path-recovery callback will
+        // start a fresh reachability check instead.
+        if nextAttemptAt != nil {
+            retryScheduleGeneration &+= 1
+            nextAttemptAt = nil
+            Logger.shared.debug("Network readiness was lost — paused pending portal retry.")
+        }
     }
 
     /// Called when the user saves or removes credentials. Without this, fixing a
@@ -812,7 +925,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // whatever network existed before sleep, and its WebKit navigation is now
         // meaningless. Previously this function ignored that case entirely: it
         // only looked at `nextAttemptAt`, so the stale attempt kept `isConnecting`
-        // true and blocked every entry point until the 45s watchdog got round to
+        // true and blocked every entry point until the final watchdog got round to
         // failing it — which also cost a rung of the retry ladder.
         if isConnecting {
             finish(currentAttempt)
@@ -913,7 +1026,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             DispatchQueue.main.asyncAfter(deadline: .now() + cooldown + 1) { [weak self] in
                 guard let self, self.retryScheduleGeneration == generation else { return }
                 self.nextAttemptAt = nil
-                guard !self.isConnecting, NetworkMonitor.shared.isConnectedToSRM else { return }
+                guard !self.isConnecting, NetworkMonitor.shared.isReadyForAutomaticLogin else { return }
                 self.attemptLogin()
             }
         }

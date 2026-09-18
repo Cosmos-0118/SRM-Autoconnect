@@ -47,12 +47,17 @@ final class Harness: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKSc
 
     func inspect() {
         let probe = """
+        (function() {
+          var user = document.querySelector('input[type="text"], input[type="email"], input[type="tel"]');
+          var pass = document.querySelector('input[type="password"]');
         JSON.stringify({
-          user: document.getElementById('loginId').value,
-          pass: document.getElementById('pwd').value,
+          user: user ? user.value : '',
+          pass: pass ? pass.value : '',
           clicked: window.__clicked || [],
+          handlerCalled: !!window.__handlerCalled,
           submitted: !!window.__formSubmitted
         })
+        })()
         """
         webView.evaluateJavaScript(probe) { result, _ in
             print("=== script reports ===")
@@ -65,14 +70,15 @@ final class Harness: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKSc
                 let user = o["user"] as? String ?? ""
                 let pw = o["pass"] as? String ?? ""
                 let clicked = o["clicked"] as? [String] ?? []
+                let handlerCalled = o["handlerCalled"] as? Bool ?? false
                 print("\n=== assertions ===")
                 func check(_ name: String, _ cond: Bool) {
                     print("  [\(cond ? "PASS" : "FAIL")] \(name)"); if !cond { pass = false }
                 }
                 check("username field filled", user == "AN1234")
                 check("password field filled", pw == "s3cr3t")
-                check("clicked the real submit button, not the username input",
-                      clicked.contains("BUTTON#btnSubmit") && !clicked.contains("INPUT#loginId"))
+                check("used a real submit path, not the username input",
+                      (clicked.contains("BUTTON#btnSubmit") || handlerCalled) && !clicked.contains("INPUT#loginId"))
                 check("form actually submitted", (o["submitted"] as? Bool) == true)
                 let stage = self.reports.first?["stage"] as? String ?? ""
                 check("reported stage == submitted (got '\(stage)')", stage == "submitted")
