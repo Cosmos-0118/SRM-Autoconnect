@@ -4,6 +4,9 @@
     <input id="LoginUserPassword_auth_realm" type="hidden" value="passwordRealm">
     <input type="text" id="LoginUserPassword_auth_username" cpname="username">
     <input type="password" id="LoginUserPassword_auth_password" cpname="password">
+    <!-- The live page includes a hidden native submit. Selecting it instead of
+         the portal handler bypasses the RSA/AJAX authentication path. -->
+    <input type="submit" style="display:none">
   </form>
 </div>
 <!-- The real SRM portal uses this anchor outside the form, but its click handler
