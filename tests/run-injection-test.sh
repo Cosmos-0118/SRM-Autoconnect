@@ -34,11 +34,19 @@ open(os.path.join(work, 'injected.js'), 'w').write(js)
 print(f"  extracted {len(js)} chars")
 PY
 
-cp "$ROOT/tests/fixtures/portal-jsbutton.html" "$WORK/portal.html"
+run_fixture() {
+  local fixture="$1"
+  local fixture_dir="$WORK/$fixture"
+  mkdir -p "$fixture_dir"
+  cp "$ROOT/tests/fixtures/$fixture.html" "$fixture_dir/portal.html"
 
-echo "Building the harness..."
-sed "s#__FIXTURE_DIR__#$WORK#g" "$ROOT/tests/InjectionHarness.swift" > "$WORK/main.swift"
-swiftc -target "$(uname -m)-apple-macosx13.0" "$WORK/main.swift" -o "$WORK/harness"
+  echo "Building harness for $fixture..."
+  sed "s#__FIXTURE_DIR__#$fixture_dir#g" "$ROOT/tests/InjectionHarness.swift" > "$fixture_dir/main.swift"
+  swiftc -target "$(uname -m)-apple-macosx13.0" "$fixture_dir/main.swift" -o "$fixture_dir/harness"
 
-echo "Running..."
-"$WORK/harness"
+  echo "Running $fixture..."
+  "$fixture_dir/harness"
+}
+
+run_fixture portal-jsbutton
+run_fixture srm-portal

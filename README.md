@@ -26,9 +26,9 @@ When the probes show that the internet is unavailable, the app:
 2. Refuses to inject credentials unless the loaded page remains HTTPS on `iac.srmist.edu.in` and uses the default HTTPS port.
 3. Finds the password field and a text, email, or telephone username field in the same form.
 4. Sets both fields and dispatches `input` and `change` events so portal pages with framework-managed form state receive the update.
-5. Activates a submit control, then repeatedly checks internet reachability to confirm the portal actually opened access.
+5. Uses the portal's own authentication handler when available (this preserves SRM's password-encryption/AJAX flow), otherwise activates a real submit control, then repeatedly checks internet reachability to confirm the portal actually opened access.
 
-An attempt has a 45-second watchdog. A failed attempt retries after approximately 3, 8, 20, and 45 seconds (with a small random delay). After those retries are exhausted, the next automatic attempt is delayed for 1, 3, 5, then 10 minutes. Leaving `SRMIST` cancels an in-progress login and discards pending retries.
+An attempt has phase-specific watchdogs: portal navigation is stopped after 18 seconds, the dynamically rendered login form is given 25 seconds, and a 60-second final watchdog covers unexpected WebKit/JavaScript stalls. A failed attempt retries after approximately 3, 8, 20, and 45 seconds (with a small random delay). After those retries are exhausted, the next automatic attempt is delayed for 1, 3, 5, then 10 minutes. Leaving `SRMIST` cancels an in-progress login and discards pending retries.
 
 **Force Connect** clears the current retry backoff and starts an attempt immediately. It may be used even when the current SSID is not `SRMIST`; the app still performs its normal internet check before loading the portal.
 

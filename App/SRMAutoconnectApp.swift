@@ -35,7 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// characteristic ~316s cadence. The damage is not cosmetic — one stall
     /// began immediately after "On SRMIST with no internet — triggering login"
     /// and lasted 33 minutes, so the reconnect the user was waiting for simply
-    /// never ran. Another froze 3 minutes mid-login, straight through the 45s
+    /// never ran. Another froze 3 minutes mid-login, straight through the final
     /// watchdog (which is itself an `asyncAfter`, so it stalled too).
     ///
     /// `.userInitiatedAllowingIdleSystemSleep` is the specific option that

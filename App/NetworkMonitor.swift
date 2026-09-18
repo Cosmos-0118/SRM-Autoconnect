@@ -307,12 +307,14 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
             DispatchQueue.main.async { self.updateNetworkStatus() }
             return
         }
-        guard let interface = client?.interface() else {
+        let interface = client?.interface()
+        if interface == nil {
+            // CoreWLAN can briefly return no interface while Wi-Fi is being
+            // disabled or reassociated. Treat that as an unusable observation so
+            // no portal attempt is started against a stale retained SSID.
             Logger.shared.debug("No Wi-Fi interface available.")
-            return
         }
-
-        let raw = interface.ssid() ?? ""
+        let raw = interface?.ssid() ?? ""
         let observationWasUsable = latestSSIDReadWasUsable
         latestSSIDReadWasUsable = !raw.isEmpty
         if observationWasUsable != latestSSIDReadWasUsable {
