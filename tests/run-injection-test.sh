@@ -39,6 +39,7 @@ run_fixture() {
   local fixture_dir="$WORK/$fixture"
   mkdir -p "$fixture_dir"
   cp "$ROOT/tests/fixtures/$fixture.html" "$fixture_dir/portal.html"
+  cp "$WORK/injected.js" "$fixture_dir/injected.js"
 
   echo "Building harness for $fixture..."
   sed "s#__FIXTURE_DIR__#$fixture_dir#g" "$ROOT/tests/InjectionHarness.swift" > "$fixture_dir/main.swift"

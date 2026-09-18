@@ -73,7 +73,11 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// An attempt has phase-specific watchdogs below. This is only the final
     /// safety net for an unexpected WebKit/JavaScript state that never reports
     /// its own outcome.
-    private let attemptHardTimeout: TimeInterval = 60
+    // The bounded phases can legitimately total a little over 100 seconds in
+    // the worst case (preflight + navigation + form discovery + five network
+    // verification probes). Keep this above that ceiling so it remains a true
+    // deadlock safety net rather than pre-empting a healthy verification loop.
+    private let attemptHardTimeout: TimeInterval = 120
     private let portalNavigationTimeout: TimeInterval = 18
     private let loginFormTimeout: TimeInterval = 25
     /// How long to stop retrying when the blocker is the user, not the network.
