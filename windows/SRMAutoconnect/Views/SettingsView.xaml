@@ -32,6 +32,12 @@
                          CaretBrush="{x:Static helpers:Theme.GreenBrush}"
                          FontFamily="{x:Static helpers:Theme.MonoFont}"
                          Foreground="{x:Static helpers:Theme.GreenBrush}" />
+            <TextBlock x:Name="PasswordHintText"
+                       Margin="0,5,0,0"
+                       FontSize="9"
+                       Foreground="{x:Static helpers:Theme.DimGreenBrush}"
+                       Text="Enter Password"
+                       TextWrapping="Wrap" />
 
             <CheckBox x:Name="OpenAtLoginCheckBox"
                       Margin="0,14,0,0"

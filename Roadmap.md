@@ -12,7 +12,7 @@ This document is the building roadmap for porting the existing macOS/iOS menu-ba
 | UI Framework | SwiftUI popover from NSStatusItem | WPF system-tray app (Hardcodet.NotifyIcon.Wpf) |
 | Headless browser | WKWebView (offscreen) | WebView2 (Microsoft.Web.WebView2) |
 | Wi-Fi detection | CoreWLAN (`CWWiFiClient`) | Native WiFi API via `ManagedNativeWifi` NuGet |
-| Credential storage | macOS Keychain (generic-password) | Windows Credential Manager (`CredentialManagement` NuGet / DPAPI) |
+| Credential storage | macOS Keychain (generic-password) | Windows Credential Manager (native `advapi32` interop) |
 | Notifications | `UNUserNotificationCenter` + `NSSound` | Windows Toast Notifications (`Microsoft.Toolkit.Uwp.Notifications`) |
 | Network path monitor | `NWPathMonitor` | `NetworkChange` events + `NetworkInterface` polling |
 | Logging | `~/Library/Logs/SRMAutoconnect.log` | `%LOCALAPPDATA%\SRMAutoconnect\SRMAutoconnect.log` |
@@ -71,12 +71,12 @@ Srm-AutoConnect/
 **Goal:** Buildable empty WPF app that runs in the system tray and opens a blank popup.
 
 - [x] Create `windows/SRMAutoconnect.sln` and `SRMAutoconnect.csproj` targeting `net8.0-windows`.
-- [x] Add NuGet references:
+- [x] Add required Windows dependencies:
   - `Hardcodet.NotifyIcon.Wpf` (system-tray icon)
   - `Microsoft.Web.WebView2` (offscreen browser)
   - `ManagedNativeWifi` (Wi-Fi SSID detection)
   - `Microsoft.Toolkit.Uwp.Notifications` (toast notifications)
-  - `CredentialManagement` (Windows Credential Manager wrapper)
+  - Native Windows Credential Manager interop (implemented in Phase 3; no compatibility-warning NuGet package)
 - [x] Wire `App.xaml` to suppress the main window (`ShutdownMode="OnExplicitShutdown"`).
 - [x] Add a `TaskbarIcon` from Hardcodet with a placeholder Wi-Fi icon.
 - [x] Left-click opens a small `MainPopup` window (300 × 400, borderless, topmost, positioned above the tray icon — same feel as the macOS popover).
@@ -132,13 +132,15 @@ Srm-AutoConnect/
 ### Phase 3 — Credential store
 **Goal:** Save / read / delete SRM credentials securely using the Windows Credential Manager.
 
-- [ ] Target: `Generic Credential` entries under `SRMAutoconnect/username` and `SRMAutoconnect/password`.
-- [ ] `Save(data, target)`, `Read(target) → byte[]?`, `Delete(target)` — all throw on real failures, return null only for "never saved".
-- [ ] Verify-after-write (read back and compare), exactly as `KeychainHelper.swift` does.
-- [ ] Wire into `SettingsView` (save, load on appear, forget).
-- [ ] Trim whitespace on the SRM ID, blank password = "keep stored", etc.
+- [x] Target: `Generic Credential` entries under `SRMAutoconnect/username` and `SRMAutoconnect/password`.
+- [x] `Save(data, target)`, `Read(target) → byte[]?`, `Delete(target)` — all throw on real failures, return null only for "never saved".
+- [x] Verify-after-write (read back and compare), exactly as `KeychainHelper.swift` does.
+- [x] Wire into `SettingsView` (save, load on appear, forget).
+- [x] Trim whitespace on the SRM ID, blank password = "keep stored", etc.
 
 **Deliverable:** Credentials round-trip through the Windows Credential Manager.
+
+**Status:** Completed. `Core/CredentialStore.cs` uses native Windows Credential Manager APIs, `SettingsView` now loads/saves/forgets credentials with read-back verification, and the old incompatible `CredentialManagement` package was removed. Build, credential round-trip self-test, startup smoke test, and lint check passed.
 
 ---
 
