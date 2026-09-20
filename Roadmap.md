@@ -144,7 +144,7 @@ Srm-AutoConnect/
 
 ---
 
-### Phase 4 — Network monitor
+### Phase 4 — Network monitor (done)
 **Goal:** Detect the SRMIST SSID, track connectivity, and trigger login attempts — mirroring `NetworkMonitor.swift`.
 
 - [x] Poll the current SSID every 5 seconds via `ManagedNativeWifi` (or `Wlan` API).
