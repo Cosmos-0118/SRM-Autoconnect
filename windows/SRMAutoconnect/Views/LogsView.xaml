@@ -1,6 +1,7 @@
 <UserControl x:Class="SRMAutoconnect.Views.LogsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="clr-namespace:SRMAutoconnect.Core"
              xmlns:helpers="clr-namespace:SRMAutoconnect.Helpers">
     <Grid Margin="14,22,14,12" Background="{x:Static helpers:Theme.BackgroundBrush}">
         <Grid.RowDefinitions>
@@ -34,19 +35,28 @@
         </Grid>
 
         <Border Grid.Row="1" Style="{StaticResource TerminalPanel}">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="LogList">
-                    <TextBlock Text="[00:00:00] Windows UI shell ready."
-                               FontSize="11"
-                               Foreground="{x:Static helpers:Theme.GreenBrush}"
-                               TextWrapping="Wrap" />
-                    <Separator Margin="0,6" Background="{x:Static helpers:Theme.PanelBorderBrush}" />
-                    <TextBlock Text="[00:00:01] Logger will be wired in Phase 2."
-                               FontSize="11"
-                               Foreground="{x:Static helpers:Theme.GreenBrush}"
-                               TextWrapping="Wrap" />
-                </StackPanel>
-            </ScrollViewer>
+            <Grid>
+                <TextBlock x:Name="EmptyLogText"
+                           Text="NO LOGS YET."
+                           FontSize="12"
+                           Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Logs}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type core:LogEntry}">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Text}"
+                                               FontSize="11"
+                                               Foreground="{x:Static helpers:Theme.GreenBrush}"
+                                               TextWrapping="Wrap" />
+                                    <Separator Margin="0,6"
+                                               Background="{x:Static helpers:Theme.PanelBorderBrush}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
         </Border>
     </Grid>
 </UserControl>

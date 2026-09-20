@@ -115,15 +115,17 @@ Srm-AutoConnect/
 ### Phase 2 — Logger
 **Goal:** Rotating file logger + in-app log list, identical behaviour to `Logger.swift`.
 
-- [ ] Log file at `%LOCALAPPDATA%\SRMAutoconnect\SRMAutoconnect.log`.
-- [ ] Rotate at ~1 MB, keep one `.log.1` backup.
-- [ ] Thread-safe file writes on a background queue.
-- [ ] `ObservableCollection<LogEntry>` capped at 300 entries, newest first.
-- [ ] Consecutive-duplicate collapsing ("×N").
-- [ ] `log()` = user-facing (UI + file), `debug()` = file-only (unless debug flag).
-- [ ] Wire into `LogsView`.
+- [x] Log file at `%LOCALAPPDATA%\SRMAutoconnect\SRMAutoconnect.log`.
+- [x] Rotate at ~1 MB, keep one `.log.1` backup.
+- [x] Thread-safe file writes on a background queue.
+- [x] `ObservableCollection<LogEntry>` capped at 300 entries, newest first.
+- [x] Consecutive-duplicate collapsing ("×N").
+- [x] `log()` = user-facing (UI + file), `debug()` = file-only (unless debug flag).
+- [x] Wire into `LogsView`.
 
 **Deliverable:** Logs show in the UI and persist to disk.
+
+**Status:** Completed. `Core/Logger.cs` writes to `%LOCALAPPDATA%\SRMAutoconnect\SRMAutoconnect.log`, rotates at 1 MB, updates the Logs tab through an observable collection, and supports copy/clear actions. Build, startup smoke test, and log-file verification passed.
 
 ---
 

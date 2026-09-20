@@ -1,9 +1,11 @@
-﻿using System.Drawing;
+﻿using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using Hardcodet.Wpf.TaskbarNotification;
+using SRMAutoconnect.Core;
 using SRMAutoconnect.Views;
 
 namespace SRMAutoconnect;
@@ -17,6 +19,9 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        Logger.Shared.Log("Windows UI shell ready.");
+        Logger.Shared.Debug($"Log file: {Logger.Shared.LogFilePath}");
+
         trayIcon = new TaskbarIcon
         {
             Icon = LoadTrayIcon("not-on-srmist.ico"),
@@ -29,6 +34,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         trayIcon?.Dispose();
+        Logger.Shared.Dispose();
         base.OnExit(e);
     }
 
@@ -37,7 +43,7 @@ public partial class App : Application
         var menu = new ContextMenu();
         menu.Items.Add(MenuItem("Open SRM Autoconnect", (_, _) => ShowPopup()));
         menu.Items.Add(MenuItem("Force Connect", (_, _) => ShowPhaseNotice("Force Connect")));
-        menu.Items.Add(MenuItem("Reveal Log File", (_, _) => ShowPhaseNotice("Reveal Log File")));
+        menu.Items.Add(MenuItem("Reveal Log File", (_, _) => RevealLogFile()));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Quit SRM Autoconnect", (_, _) => Shutdown()));
         return menu;
@@ -98,6 +104,29 @@ public partial class App : Application
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "tray-icons", fileName);
         return File.Exists(path) ? new Icon(path) : SystemIcons.Application;
+    }
+
+    private static void RevealLogFile()
+    {
+        var path = Logger.Shared.LogFilePath;
+        var directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(directory);
+        if (!File.Exists(path))
+        {
+            File.WriteAllText(path, string.Empty);
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"/select,\"{path}\"",
+            UseShellExecute = true
+        });
     }
 
     [DllImport("user32.dll")]
