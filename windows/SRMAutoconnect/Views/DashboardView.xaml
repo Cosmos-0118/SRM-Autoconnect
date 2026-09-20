@@ -15,7 +15,8 @@
                                FontSize="18"
                                FontWeight="Bold"
                                Foreground="{x:Static helpers:Theme.GreenBrush}" />
-                    <Ellipse Width="10"
+                    <Ellipse x:Name="ConnectionDot"
+                             Width="10"
                              Height="10"
                              HorizontalAlignment="Right"
                              VerticalAlignment="Center"
@@ -66,7 +67,7 @@
                         </Grid>
                         <Grid Margin="0,0,0,8">
                             <TextBlock Text="CURRENT NETWORK:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
-                            <TextBlock Text="None" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                            <TextBlock x:Name="CurrentNetworkText" Text="None" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.GreenBrush}" />
                         </Grid>
                         <Grid Margin="0,0,0,8">
                             <TextBlock Text="NEXT ATTEMPT:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />

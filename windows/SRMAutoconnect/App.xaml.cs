@@ -21,19 +21,21 @@ public partial class App : Application
 
         Logger.Shared.Log("Windows UI shell ready.");
         Logger.Shared.Debug($"Log file: {Logger.Shared.LogFilePath}");
+        _ = NetworkMonitor.Shared;
 
         trayIcon = new TaskbarIcon
         {
-            Icon = LoadTrayIcon("not-on-srmist.ico"),
-            ToolTipText = "SRM Autoconnect - not on SRMIST",
             ContextMenu = BuildContextMenu()
         };
         trayIcon.TrayLeftMouseUp += (_, _) => TogglePopup();
+        NetworkMonitor.Shared.PropertyChanged += (_, _) => UpdateTrayIcon();
+        UpdateTrayIcon();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         trayIcon?.Dispose();
+        NetworkMonitor.Shared.Dispose();
         Logger.Shared.Dispose();
         base.OnExit(e);
     }
@@ -104,6 +106,26 @@ public partial class App : Application
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "tray-icons", fileName);
         return File.Exists(path) ? new Icon(path) : SystemIcons.Application;
+    }
+
+    private void UpdateTrayIcon()
+    {
+        if (trayIcon is null)
+        {
+            return;
+        }
+
+        var monitor = NetworkMonitor.Shared;
+        if (monitor.IsConnectedToSRM)
+        {
+            trayIcon.Icon = LoadTrayIcon("connected.ico");
+            trayIcon.ToolTipText = $"SRM Autoconnect - on {monitor.CurrentSSID}";
+        }
+        else
+        {
+            trayIcon.Icon = LoadTrayIcon("not-on-srmist.ico");
+            trayIcon.ToolTipText = "SRM Autoconnect - not on SRMIST";
+        }
     }
 
     private static void RevealLogFile()

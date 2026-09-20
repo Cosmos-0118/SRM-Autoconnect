@@ -147,18 +147,20 @@ Srm-AutoConnect/
 ### Phase 4 — Network monitor
 **Goal:** Detect the SRMIST SSID, track connectivity, and trigger login attempts — mirroring `NetworkMonitor.swift`.
 
-- [ ] Poll the current SSID every 5 seconds via `ManagedNativeWifi` (or `Wlan` API).
+- [x] Poll the current SSID every 5 seconds via `ManagedNativeWifi` (or `Wlan` API).
   - Same loose matching: `ssid.ToUpper().Contains("SRMIST")`.
   - Same empty-read debounce (3 consecutive nil reads before committing "no network").
-- [ ] `NetworkChange.NetworkAvailabilityChanged` + `NetworkChange.NetworkAddressChanged` as the Windows equivalent of `NWPathMonitor`.
-- [ ] Track `IsConnectedToSRM`, `CurrentSSID`, `IsReadyForAutomaticLogin`.
-- [ ] On SRMIST join → clear throttle, probe reachability.
-- [ ] On SRMIST leave → cancel in-progress login, discard retries.
-- [ ] System resume from sleep → cancel stale retry, settle 5 s, recheck (use `SystemEvents.PowerModeChanged`).
-- [ ] Reachability throttle: 60 s while online, 10 s while offline.
-- [ ] Double-probe offline confirmation (one offline reading → wait 3 s → confirm).
+- [x] `NetworkChange.NetworkAvailabilityChanged` + `NetworkChange.NetworkAddressChanged` as the Windows equivalent of `NWPathMonitor`.
+- [x] Track `IsConnectedToSRM`, `CurrentSSID`, `IsReadyForAutomaticLogin`.
+- [x] On SRMIST join → clear throttle, probe reachability.
+- [x] On SRMIST leave → cancel in-progress login, discard retries.
+- [x] System resume from sleep → cancel stale retry, settle 5 s, recheck (use `SystemEvents.PowerModeChanged`).
+- [x] Reachability throttle: 60 s while online, 10 s while offline.
+- [x] Double-probe offline confirmation (one offline reading → wait 3 s → confirm).
 
 **Deliverable:** The tray icon reflects the real network state and `checkInternetIfNeeded()` fires correctly.
+
+**Status:** Completed. `Core/NetworkMonitor.cs` polls the connected SSID, listens to Windows network-change and resume events, exposes `CurrentSSID`, `IsConnectedToSRM`, and `IsReadyForAutomaticLogin`, and drives the tray/dashboard network state. Phase 4 keeps the reachability throttle and double-confirmation structure using Windows network availability; Phase 5 will replace that placeholder with the real canary-quorum probes.
 
 ---
 
