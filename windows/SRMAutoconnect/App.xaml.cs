@@ -1,5 +1,5 @@
-﻿using System.Diagnostics;
-using System.Drawing;
+﻿using System.Drawing;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -19,8 +19,8 @@ public partial class App : Application
 
         trayIcon = new TaskbarIcon
         {
-            Icon = SystemIcons.Application,
-            ToolTipText = "SRM Autoconnect - Windows scaffold",
+            Icon = LoadTrayIcon("not-on-srmist.ico"),
+            ToolTipText = "SRM Autoconnect - not on SRMIST",
             ContextMenu = BuildContextMenu()
         };
         trayIcon.TrayLeftMouseUp += (_, _) => TogglePopup();
@@ -92,6 +92,12 @@ public partial class App : Application
             "SRM Autoconnect",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
+    }
+
+    private static Icon LoadTrayIcon(string fileName)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "tray-icons", fileName);
+        return File.Exists(path) ? new Icon(path) : SystemIcons.Application;
     }
 
     [DllImport("user32.dll")]

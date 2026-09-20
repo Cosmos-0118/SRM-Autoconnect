@@ -1,8 +1,29 @@
 ﻿<Application x:Class="SRMAutoconnect.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:helpers="clr-namespace:SRMAutoconnect.Helpers"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
-         
+        <Style x:Key="TerminalPanel" TargetType="Border">
+            <Setter Property="Background" Value="{x:Static helpers:Theme.BackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{x:Static helpers:Theme.PanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="{x:Static helpers:Theme.PanelCornerRadius}" />
+            <Setter Property="Padding" Value="10" />
+        </Style>
+
+        <Style x:Key="TerminalButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{x:Static helpers:Theme.PanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{x:Static helpers:Theme.GreenBrush}" />
+            <Setter Property="FontFamily" Value="{x:Static helpers:Theme.MonoFont}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="8,5" />
+        </Style>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{x:Static helpers:Theme.MonoFont}" />
+        </Style>
     </Application.Resources>
 </Application>

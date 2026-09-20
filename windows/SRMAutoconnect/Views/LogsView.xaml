@@ -1,0 +1,52 @@
+<UserControl x:Class="SRMAutoconnect.Views.LogsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:helpers="clr-namespace:SRMAutoconnect.Helpers">
+    <Grid Margin="14,22,14,12" Background="{x:Static helpers:Theme.BackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="ACTIVITY LOGS"
+                       FontSize="18"
+                       FontWeight="Bold"
+                       Foreground="{x:Static helpers:Theme.GreenBrush}" />
+            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                <TextBlock x:Name="ActionNote"
+                           Margin="0,3,10,0"
+                           FontSize="10"
+                           Foreground="{x:Static helpers:Theme.GreenBrush}"
+                           Visibility="Collapsed" />
+                <Button Width="30"
+                        Content="CP"
+                        Click="CopyLogs_Click"
+                        Style="{StaticResource TerminalButton}"
+                        ToolTip="Copy logs" />
+                <Button Width="30"
+                        Margin="6,0,0,0"
+                        Content="CL"
+                        Click="ClearLogs_Click"
+                        Style="{StaticResource TerminalButton}"
+                        ToolTip="Clear logs" />
+            </StackPanel>
+        </Grid>
+
+        <Border Grid.Row="1" Style="{StaticResource TerminalPanel}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="LogList">
+                    <TextBlock Text="[00:00:00] Windows UI shell ready."
+                               FontSize="11"
+                               Foreground="{x:Static helpers:Theme.GreenBrush}"
+                               TextWrapping="Wrap" />
+                    <Separator Margin="0,6" Background="{x:Static helpers:Theme.PanelBorderBrush}" />
+                    <TextBlock Text="[00:00:01] Logger will be wired in Phase 2."
+                               FontSize="11"
+                               Foreground="{x:Static helpers:Theme.GreenBrush}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</UserControl>

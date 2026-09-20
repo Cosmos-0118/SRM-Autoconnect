@@ -1,0 +1,118 @@
+<UserControl x:Class="SRMAutoconnect.Views.DashboardView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:helpers="clr-namespace:SRMAutoconnect.Helpers">
+    <Grid Background="{x:Static helpers:Theme.BackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="14,22,14,10">
+                <Grid>
+                    <TextBlock Text="SRM AUTOCONNECT"
+                               FontSize="18"
+                               FontWeight="Bold"
+                               Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                    <Ellipse Width="10"
+                             Height="10"
+                             HorizontalAlignment="Right"
+                             VerticalAlignment="Center"
+                             Fill="{x:Static helpers:Theme.DimGreenBrush}" />
+                </Grid>
+
+                <Grid Margin="0,16,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource TerminalPanel}">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="0"
+                                       HorizontalAlignment="Center"
+                                       FontSize="26"
+                                       FontWeight="Bold"
+                                       Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                            <TextBlock Text="SUCCESS"
+                                       HorizontalAlignment="Center"
+                                       FontSize="11"
+                                       Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="2" Style="{StaticResource TerminalPanel}">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="0"
+                                       HorizontalAlignment="Center"
+                                       FontSize="26"
+                                       FontWeight="Bold"
+                                       Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                            <TextBlock Text="FAILED"
+                                       HorizontalAlignment="Center"
+                                       FontSize="11"
+                                       Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <Border Margin="0,14,0,0" Style="{StaticResource TerminalPanel}">
+                    <StackPanel>
+                        <Grid Margin="0,0,0,8">
+                            <TextBlock Text="LAST CONNECTED:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+                            <TextBlock Text="NEVER" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                        </Grid>
+                        <Grid Margin="0,0,0,8">
+                            <TextBlock Text="CURRENT NETWORK:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+                            <TextBlock Text="None" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                        </Grid>
+                        <Grid Margin="0,0,0,8">
+                            <TextBlock Text="NEXT ATTEMPT:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+                            <TextBlock Text="NOT SCHEDULED" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.AmberBrush}" />
+                        </Grid>
+                        <StackPanel Orientation="Horizontal">
+                            <ProgressBar Width="66" Height="8" IsIndeterminate="True" />
+                            <TextBlock Text="CONNECTING..."
+                                       Margin="8,0,0,0"
+                                       FontSize="13"
+                                       Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Margin="0,14,0,0"
+                        Style="{StaticResource TerminalPanel}"
+                        BorderBrush="{x:Static helpers:Theme.GreenBrush}">
+                    <StackPanel>
+                        <TextBlock Text="ALREADY ONLINE"
+                                   HorizontalAlignment="Center"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                        <TextBlock Text="Placeholder result banner for Phase 1 data binding."
+                                   Margin="0,4,0,0"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   FontSize="9"
+                                   Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Button Grid.Row="1"
+                Margin="14,8,14,16"
+                Padding="10"
+                Background="{x:Static helpers:Theme.AmberBrush}"
+                BorderThickness="0"
+                Click="ForceConnectButton_Click"
+                Content="&gt; FORCE CONNECT &lt;"
+                Cursor="Hand"
+                FontFamily="{x:Static helpers:Theme.MonoFont}"
+                FontSize="13"
+                FontWeight="SemiBold"
+                Foreground="Black" />
+    </Grid>
+</UserControl>

@@ -1,0 +1,70 @@
+<UserControl x:Class="SRMAutoconnect.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:helpers="clr-namespace:SRMAutoconnect.Helpers">
+    <ScrollViewer Background="{x:Static helpers:Theme.BackgroundBrush}" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="14,22,14,14">
+            <TextBlock Text="SETTINGS"
+                       FontSize="18"
+                       FontWeight="Bold"
+                       Foreground="{x:Static helpers:Theme.GreenBrush}" />
+
+            <TextBlock Margin="0,16,0,6"
+                       Text="SRM ID"
+                       FontSize="13"
+                       Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+            <TextBox x:Name="UsernameBox"
+                     Padding="9"
+                     Background="Black"
+                     BorderBrush="{x:Static helpers:Theme.PanelBorderBrush}"
+                     CaretBrush="{x:Static helpers:Theme.GreenBrush}"
+                     FontFamily="{x:Static helpers:Theme.MonoFont}"
+                     Foreground="{x:Static helpers:Theme.GreenBrush}" />
+
+            <TextBlock Margin="0,12,0,6"
+                       Text="PASSWORD"
+                       FontSize="13"
+                       Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
+            <PasswordBox x:Name="PasswordBox"
+                         Padding="9"
+                         Background="Black"
+                         BorderBrush="{x:Static helpers:Theme.PanelBorderBrush}"
+                         CaretBrush="{x:Static helpers:Theme.GreenBrush}"
+                         FontFamily="{x:Static helpers:Theme.MonoFont}"
+                         Foreground="{x:Static helpers:Theme.GreenBrush}" />
+
+            <CheckBox x:Name="OpenAtLoginCheckBox"
+                      Margin="0,14,0,0"
+                      Content="Open at Login"
+                      FontFamily="{x:Static helpers:Theme.MonoFont}"
+                      FontSize="13"
+                      Foreground="{x:Static helpers:Theme.GreenBrush}" />
+
+            <Button Margin="0,16,0,0"
+                    Click="Save_Click"
+                    Content="&gt; SAVE &lt;"
+                    Style="{StaticResource TerminalButton}" />
+
+            <TextBlock x:Name="SaveNotice"
+                       Margin="0,8,0,0"
+                       FontSize="11"
+                       Foreground="{x:Static helpers:Theme.GreenBrush}"
+                       TextWrapping="Wrap"
+                       Visibility="Collapsed" />
+
+            <Button Margin="0,14,0,0"
+                    BorderBrush="{x:Static helpers:Theme.AmberBrush}"
+                    Click="Forget_Click"
+                    Content="&gt; FORGET SAVED CREDENTIALS &lt;"
+                    Foreground="{x:Static helpers:Theme.AmberBrush}"
+                    Style="{StaticResource TerminalButton}" />
+
+            <Button Margin="0,18,0,0"
+                    BorderBrush="Red"
+                    Click="Quit_Click"
+                    Content="&gt; QUIT &lt;"
+                    Foreground="Red"
+                    Style="{StaticResource TerminalButton}" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

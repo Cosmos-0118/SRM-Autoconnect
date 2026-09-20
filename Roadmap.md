@@ -92,21 +92,23 @@ Srm-AutoConnect/
 ### Phase 1 — Theme and UI shells
 **Goal:** The three tabs (Dashboard, Logs, Settings) rendered in the same black-and-green terminal aesthetic.
 
-- [ ] Port `Theme.swift` → `Theme.cs` (static brushes, monospace font helper, terminal-panel style).
-- [ ] Build `MainPopup.xaml` with a tab bar at the bottom (Dashboard / Logs / Settings) matching `MainMenuView.swift`.
-- [ ] Build `DashboardView.xaml` with:
+- [x] Port `Theme.swift` → `Theme.cs` (static brushes, monospace font helper, terminal-panel style).
+- [x] Build `MainPopup.xaml` with a tab bar at the bottom (Dashboard / Logs / Settings) matching `MainMenuView.swift`.
+- [x] Build `DashboardView.xaml` with:
   - Header ("SRM AUTOCONNECT") + connection indicator dot.
   - Success / Failed metric cards.
   - LAST CONNECTED, CURRENT NETWORK, NEXT ATTEMPT rows.
   - CONNECTING spinner.
   - Result banner (CONNECTED / ALREADY ONLINE / LOGIN FAILED with reason).
   - FORCE CONNECT button pinned below the scroll area.
-- [ ] Build `LogsView.xaml` with scrollable list, copy and clear buttons, flash feedback.
-- [ ] Build `SettingsView.xaml` with SRM ID field, password field, Open at Login toggle, Save / Forget / Quit buttons, status messages.
-- [ ] Add scanline overlay (`DrawingVisual` or `Canvas` with horizontal lines at 3 px pitch).
-- [ ] Add tray-icon assets for each state: connected, connecting, failed, not-on-SRMIST.
+- [x] Build `LogsView.xaml` with scrollable list, copy and clear buttons, flash feedback.
+- [x] Build `SettingsView.xaml` with SRM ID field, password field, Open at Login toggle, Save / Forget / Quit buttons, status messages.
+- [x] Add scanline overlay (`DrawingVisual` or `Canvas` with horizontal lines at 3 px pitch).
+- [x] Add tray-icon assets for each state: connected, connecting, failed, not-on-SRMIST.
 
 **Deliverable:** All UI laid out and styled. Bound to placeholder ViewModels with dummy data.
+
+**Status:** Completed. The Windows popup now has themed Dashboard, Logs, and Settings shells, placeholder tab interactions, scanline overlay, and tray icon assets. `dotnet build windows/SRMAutoconnect.sln` succeeds, and a start/stop smoke test confirms the app launches.
 
 ---
 
