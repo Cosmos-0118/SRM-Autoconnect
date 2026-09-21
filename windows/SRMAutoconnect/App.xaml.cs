@@ -23,6 +23,7 @@ public partial class App : Application
         Logger.Shared.Debug($"Log file: {Logger.Shared.LogFilePath}");
         _ = NetworkMonitor.Shared;
         _ = AutoConnectManager.Shared;
+        AutoConnectManager.Shared.PrewarmWebView();
 
         trayIcon = new TaskbarIcon
         {

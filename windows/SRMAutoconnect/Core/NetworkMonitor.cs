@@ -15,6 +15,7 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
     private const int EmptyReadsToConfirm = 3;
 
     private readonly DispatcherTimer ssidTimer;
+    private readonly DispatcherTimer reachabilityTimer;
     private int pendingEmptyReads;
     private int networkGeneration;
     private bool latestSsidReadWasUsable;
@@ -92,6 +93,10 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
         ssidTimer.Tick += (_, _) => UpdateNetworkStatus();
         ssidTimer.Start();
 
+        reachabilityTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        reachabilityTimer.Tick += (_, _) => CheckInternetIfNeeded();
+        reachabilityTimer.Start();
+
         NetworkChange.NetworkAvailabilityChanged += HandleNetworkAvailabilityChanged;
         NetworkChange.NetworkAddressChanged += HandleNetworkAddressChanged;
         SystemEvents.PowerModeChanged += HandlePowerModeChanged;
@@ -109,6 +114,16 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
         EnsureOnDispatcher();
 
         if (!IsReadyForAutomaticLogin || reachabilityProbeInFlight)
+        {
+            return;
+        }
+
+        if (AutoConnectManager.Shared.IsConnecting)
+        {
+            return;
+        }
+
+        if (AutoConnectManager.Shared.NextAttemptAt is { } next && next > DateTime.Now)
         {
             return;
         }
@@ -134,6 +149,11 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
                 if (generation != networkGeneration || !IsReadyForAutomaticLogin)
                 {
                     Logger.Shared.Debug("Ignoring reachability result from a previous Wi-Fi state.");
+                    if (IsReadyForAutomaticLogin)
+                    {
+                        lastReachabilityCheck = null;
+                        CheckInternetIfNeeded();
+                    }
                     return;
                 }
 
@@ -223,6 +243,7 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
 
         disposed = true;
         ssidTimer.Stop();
+        reachabilityTimer.Stop();
         NetworkChange.NetworkAvailabilityChanged -= HandleNetworkAvailabilityChanged;
         NetworkChange.NetworkAddressChanged -= HandleNetworkAddressChanged;
         SystemEvents.PowerModeChanged -= HandlePowerModeChanged;
