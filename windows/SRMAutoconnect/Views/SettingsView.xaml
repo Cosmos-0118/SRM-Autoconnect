@@ -41,10 +41,12 @@
 
             <CheckBox x:Name="OpenAtLoginCheckBox"
                       Margin="0,14,0,0"
+                      Checked="OpenAtLoginCheckBox_Changed"
                       Content="Open at Login"
                       FontFamily="{x:Static helpers:Theme.MonoFont}"
                       FontSize="13"
-                      Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                      Foreground="{x:Static helpers:Theme.GreenBrush}"
+                      Unchecked="OpenAtLoginCheckBox_Changed" />
 
             <Button Margin="0,16,0,0"
                     Click="Save_Click"

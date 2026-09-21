@@ -10,6 +10,7 @@ namespace SRMAutoconnect.Views;
 public partial class SettingsView : UserControl
 {
     private bool hasStoredPassword;
+    private bool loadingSettings;
 
     public SettingsView()
     {
@@ -57,6 +58,7 @@ public partial class SettingsView : UserControl
             Logger.Shared.Log(keepExistingPassword
                 ? "SRM ID saved; stored password left unchanged."
                 : "Credentials saved securely.");
+            AutoConnectManager.Shared.CredentialsChanged();
         }
         catch (Exception ex)
         {
@@ -78,6 +80,7 @@ public partial class SettingsView : UserControl
             UpdatePasswordHint();
             ShowNotice("SAVED CREDENTIALS REMOVED.", Theme.AmberBrush);
             Logger.Shared.Log("Saved credentials removed from Windows Credential Manager.");
+            AutoConnectManager.Shared.CredentialsChanged();
         }
         catch (Exception ex)
         {
@@ -96,6 +99,7 @@ public partial class SettingsView : UserControl
     {
         try
         {
+            loadingSettings = true;
             var usernameData = CredentialStore.Shared.Read(CredentialStore.UsernameTarget);
             if (usernameData is not null)
             {
@@ -105,11 +109,40 @@ public partial class SettingsView : UserControl
             hasStoredPassword = CredentialStore.Shared.Read(CredentialStore.PasswordTarget) is not null;
             PasswordBox.Clear();
             UpdatePasswordHint();
+            OpenAtLoginCheckBox.IsChecked = StartupService.Shared.IsEnabled();
         }
         catch (Exception ex)
         {
             ShowNotice($"CREDENTIALS: {ex.Message}", Brushes.Red);
             Logger.Shared.Log($"Cannot read saved credentials: {ex.Message}");
+        }
+        finally
+        {
+            loadingSettings = false;
+        }
+    }
+
+    private void OpenAtLoginCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (loadingSettings)
+        {
+            return;
+        }
+
+        var enabled = OpenAtLoginCheckBox.IsChecked == true;
+        try
+        {
+            StartupService.Shared.SetEnabled(enabled);
+            ShowNotice(enabled ? "OPEN AT LOGIN ENABLED." : "OPEN AT LOGIN DISABLED.", Theme.GreenBrush);
+        }
+        catch (Exception ex)
+        {
+            loadingSettings = true;
+            OpenAtLoginCheckBox.IsChecked = StartupService.Shared.IsEnabled();
+            loadingSettings = false;
+            var message = $"OPEN AT LOGIN FAILED: {ex.Message}";
+            ShowNotice(message, Brushes.Red);
+            Logger.Shared.Log(message);
         }
     }
 

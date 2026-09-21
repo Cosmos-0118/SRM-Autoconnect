@@ -122,19 +122,22 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
         reachabilityProbeInFlight = true;
         var generation = networkGeneration;
 
-        Task.Run(NetworkInterface.GetIsNetworkAvailable).ContinueWith(task =>
+        ReachabilityProbe.Shared.ProbeReachabilityAsync().ContinueWith(task =>
         {
-            var online = task.Status == TaskStatus.RanToCompletion && task.Result;
+            var reachability = task.Status == TaskStatus.RanToCompletion
+                ? task.Result
+                : new Reachability(Online: false, CaptivePortal: false, Detail: $"probe failed ({task.Exception?.GetBaseException().Message ?? "unknown error"})");
+
             Application.Current.Dispatcher.BeginInvoke(() =>
             {
                 reachabilityProbeInFlight = false;
                 if (generation != networkGeneration || !IsReadyForAutomaticLogin)
                 {
-                    Logger.Shared.Debug("Ignoring reachability placeholder result from a previous Wi-Fi state.");
+                    Logger.Shared.Debug("Ignoring reachability result from a previous Wi-Fi state.");
                     return;
                 }
 
-                HandleReachabilityResult(online, generation);
+                HandleReachabilityResult(reachability, generation);
             });
         });
     }
@@ -242,27 +245,30 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private void HandleReachabilityResult(bool online, int generation)
+    private void HandleReachabilityResult(Reachability reachability, int generation)
     {
-        lastProbeWasOnline = online;
+        lastProbeWasOnline = reachability.Online;
 
-        if (online)
+        if (reachability.Online)
         {
             consecutiveOfflineProbes = 0;
             ResetOfflineConfirmation();
-            Logger.Shared.Debug("Reachability placeholder: network available.");
+            Logger.Shared.Debug($"Internet reachable on SRMIST ({reachability.Detail}).");
             return;
         }
 
         consecutiveOfflineProbes++;
         if (consecutiveOfflineProbes == 1)
         {
-            Logger.Shared.Debug("Reachability placeholder failed once - confirming before portal login.");
+            Logger.Shared.Log($"No internet on SRMIST ({reachability.Detail}). Confirming before portal login.");
             ScheduleOfflineConfirmation(generation);
             return;
         }
 
-        Logger.Shared.Log("On SRMIST with confirmed no internet - AutoConnectManager will be triggered in Phase 6.");
+        Logger.Shared.Log(reachability.CaptivePortal
+            ? $"Captive portal detected ({reachability.Detail}). Logging in..."
+            : $"No internet confirmed ({reachability.Detail}). Starting portal login...");
+        AutoConnectManager.Shared.AttemptLoginAfterConfirmedOutage(reachability);
     }
 
     private void ScheduleOfflineConfirmation(int generation)
@@ -345,6 +351,7 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
 
             lastWakeHandledAt = DateTime.Now;
             Logger.Shared.Debug("System resumed. Rechecking network in 5s...");
+            AutoConnectManager.Shared.CancelPendingRetryForWake();
             HandleReadinessLoss();
 
             Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ =>
@@ -362,6 +369,7 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
     private void HandleReadinessLoss()
     {
         ResetOfflineConfirmation();
+        AutoConnectManager.Shared.CancelAutomaticLoginForReadinessLoss();
         Logger.Shared.Debug("Network readiness was lost - automatic portal login is paused until readiness returns.");
     }
 
@@ -370,7 +378,8 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
         ResetOfflineConfirmation();
         lastReachabilityCheck = null;
         consecutiveOfflineProbes = 0;
-        Logger.Shared.Debug("Left SRMIST - discarded pending portal retry state placeholder.");
+        AutoConnectManager.Shared.CancelAutomaticLoginForNetworkChange();
+        Logger.Shared.Debug("Left SRMIST - discarded pending portal retry state.");
     }
 
     private void ResetOfflineConfirmation()

@@ -22,6 +22,7 @@ public partial class App : Application
         Logger.Shared.Log("Windows UI shell ready.");
         Logger.Shared.Debug($"Log file: {Logger.Shared.LogFilePath}");
         _ = NetworkMonitor.Shared;
+        _ = AutoConnectManager.Shared;
 
         trayIcon = new TaskbarIcon
         {
@@ -29,6 +30,8 @@ public partial class App : Application
         };
         trayIcon.TrayLeftMouseUp += (_, _) => TogglePopup();
         NetworkMonitor.Shared.PropertyChanged += (_, _) => UpdateTrayIcon();
+        AutoConnectManager.Shared.PropertyChanged += (_, _) => UpdateTrayIcon();
+        NotificationService.Shared.NotificationRequested += HandleNotificationRequested;
         UpdateTrayIcon();
     }
 
@@ -36,6 +39,8 @@ public partial class App : Application
     {
         trayIcon?.Dispose();
         NetworkMonitor.Shared.Dispose();
+        AutoConnectManager.Shared.Dispose();
+        ReachabilityProbe.Shared.Dispose();
         Logger.Shared.Dispose();
         base.OnExit(e);
     }
@@ -44,7 +49,7 @@ public partial class App : Application
     {
         var menu = new ContextMenu();
         menu.Items.Add(MenuItem("Open SRM Autoconnect", (_, _) => ShowPopup()));
-        menu.Items.Add(MenuItem("Force Connect", (_, _) => ShowPhaseNotice("Force Connect")));
+        menu.Items.Add(MenuItem("Force Connect", (_, _) => AutoConnectManager.Shared.AttemptLogin(force: true)));
         menu.Items.Add(MenuItem("Reveal Log File", (_, _) => RevealLogFile()));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Quit SRM Autoconnect", (_, _) => Shutdown()));
@@ -56,6 +61,11 @@ public partial class App : Application
         var item = new MenuItem { Header = header };
         item.Click += click;
         return item;
+    }
+
+    private void HandleNotificationRequested(object? sender, NotificationRequest request)
+    {
+        trayIcon?.ShowBalloonTip(request.Title, request.Message, BalloonIcon.Info);
     }
 
     private void TogglePopup()
@@ -116,7 +126,18 @@ public partial class App : Application
         }
 
         var monitor = NetworkMonitor.Shared;
-        if (monitor.IsConnectedToSRM)
+        var manager = AutoConnectManager.Shared;
+        if (manager.IsConnecting)
+        {
+            trayIcon.Icon = LoadTrayIcon("connecting.ico");
+            trayIcon.ToolTipText = "SRM Autoconnect - logging in";
+        }
+        else if (manager.LastResult == LoginResult.Failure)
+        {
+            trayIcon.Icon = LoadTrayIcon("failed.ico");
+            trayIcon.ToolTipText = "SRM Autoconnect - login failed";
+        }
+        else if (monitor.IsConnectedToSRM)
         {
             trayIcon.Icon = LoadTrayIcon("connected.ico");
             trayIcon.ToolTipText = $"SRM Autoconnect - on {monitor.CurrentSSID}";

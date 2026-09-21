@@ -32,7 +32,8 @@
 
                     <Border Grid.Column="0" Style="{StaticResource TerminalPanel}">
                         <StackPanel HorizontalAlignment="Center">
-                            <TextBlock Text="0"
+                            <TextBlock x:Name="SuccessValueText"
+                                       Text="0"
                                        HorizontalAlignment="Center"
                                        FontSize="26"
                                        FontWeight="Bold"
@@ -46,7 +47,8 @@
 
                     <Border Grid.Column="2" Style="{StaticResource TerminalPanel}">
                         <StackPanel HorizontalAlignment="Center">
-                            <TextBlock Text="0"
+                            <TextBlock x:Name="FailedValueText"
+                                       Text="0"
                                        HorizontalAlignment="Center"
                                        FontSize="26"
                                        FontWeight="Bold"
@@ -63,17 +65,17 @@
                     <StackPanel>
                         <Grid Margin="0,0,0,8">
                             <TextBlock Text="LAST CONNECTED:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
-                            <TextBlock Text="NEVER" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.GreenBrush}" />
+                            <TextBlock x:Name="LastConnectedText" Text="NEVER" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.GreenBrush}" />
                         </Grid>
                         <Grid Margin="0,0,0,8">
                             <TextBlock Text="CURRENT NETWORK:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
                             <TextBlock x:Name="CurrentNetworkText" Text="None" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.GreenBrush}" />
                         </Grid>
-                        <Grid Margin="0,0,0,8">
+                        <Grid x:Name="NextAttemptRow" Margin="0,0,0,8">
                             <TextBlock Text="NEXT ATTEMPT:" FontSize="13" Foreground="{x:Static helpers:Theme.DimGreenBrush}" />
-                            <TextBlock Text="NOT SCHEDULED" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.AmberBrush}" />
+                            <TextBlock x:Name="NextAttemptText" Text="NOT SCHEDULED" HorizontalAlignment="Right" FontSize="13" Foreground="{x:Static helpers:Theme.AmberBrush}" />
                         </Grid>
-                        <StackPanel Orientation="Horizontal">
+                        <StackPanel x:Name="ConnectingPanel" Orientation="Horizontal">
                             <ProgressBar Width="66" Height="8" IsIndeterminate="True" />
                             <TextBlock Text="CONNECTING..."
                                        Margin="8,0,0,0"
@@ -83,16 +85,19 @@
                     </StackPanel>
                 </Border>
 
-                <Border Margin="0,14,0,0"
+                <Border x:Name="ResultBanner"
+                        Margin="0,14,0,0"
                         Style="{StaticResource TerminalPanel}"
                         BorderBrush="{x:Static helpers:Theme.GreenBrush}">
                     <StackPanel>
-                        <TextBlock Text="ALREADY ONLINE"
+                        <TextBlock x:Name="ResultTitleText"
+                                   Text="ALREADY ONLINE"
                                    HorizontalAlignment="Center"
                                    FontSize="12"
                                    FontWeight="SemiBold"
                                    Foreground="{x:Static helpers:Theme.GreenBrush}" />
-                        <TextBlock Text="Placeholder result banner for Phase 1 data binding."
+                        <TextBlock x:Name="ResultDetailText"
+                                   Text="Placeholder result banner for Phase 1 data binding."
                                    Margin="0,4,0,0"
                                    TextAlignment="Center"
                                    TextWrapping="Wrap"
@@ -103,7 +108,8 @@
             </StackPanel>
         </ScrollViewer>
 
-        <Button Grid.Row="1"
+        <Button x:Name="ForceConnectButton"
+                Grid.Row="1"
                 Margin="14,8,14,16"
                 Padding="10"
                 Background="{x:Static helpers:Theme.AmberBrush}"

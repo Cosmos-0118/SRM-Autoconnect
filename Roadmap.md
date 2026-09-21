@@ -160,79 +160,87 @@ Srm-AutoConnect/
 
 **Deliverable:** The tray icon reflects the real network state and `checkInternetIfNeeded()` fires correctly.
 
-**Status:** Completed. `Core/NetworkMonitor.cs` polls the connected SSID, listens to Windows network-change and resume events, exposes `CurrentSSID`, `IsConnectedToSRM`, and `IsReadyForAutomaticLogin`, and drives the tray/dashboard network state. Phase 4 keeps the reachability throttle and double-confirmation structure using Windows network availability; Phase 5 will replace that placeholder with the real canary-quorum probes.
+**Status:** Completed. `Core/NetworkMonitor.cs` polls the connected SSID, listens to Windows network-change and resume events, exposes `CurrentSSID`, `IsConnectedToSRM`, and `IsReadyForAutomaticLogin`, and drives the tray/dashboard network state. Phase 5 has replaced the temporary network-availability check with real canary-quorum probes.
 
 ---
 
 ### Phase 5 — Reachability probes
 **Goal:** The same canary-quorum check used by the macOS app.
 
-- [ ] Canaries (unchanged):
+- [x] Canaries (unchanged):
   - `https://example.com` → contains "Example Domain"
   - `https://cloudflare.com/cdn-cgi/trace` → contains "fl="
   - `https://www.mozilla.org/robots.txt` → contains "user-agent" (case-insensitive)
-- [ ] Quorum = 2/3.
-- [ ] Apple captive-portal probe (`http://captive.apple.com/hotspot-detect.html`) to distinguish portal-intercept from dead network.
+- [x] Quorum = 2/3.
+- [x] Apple captive-portal probe (`http://captive.apple.com/hotspot-detect.html`) to distinguish portal-intercept from dead network.
   - On Windows, optionally also / instead use Microsoft's `http://www.msftconnecttest.com/connecttest.txt` (expects "Microsoft Connect Test").
-- [ ] Ephemeral `HttpClient` — no cache, no cookies, 6 s request timeout, 8 s resource timeout.
-- [ ] Return `Reachability { Online, CaptivePortal, Detail }`.
+- [x] Ephemeral `HttpClient` — no cache, no cookies, 6 s request timeout, 8 s resource timeout.
+- [x] Return `Reachability { Online, CaptivePortal, Detail }`.
 
 **Deliverable:** `ProbeReachability()` returns the same verdicts as the macOS version.
+
+**Status:** Completed. `Core/ReachabilityProbe.cs` performs the 2-of-3 canary check, records detailed per-URL diagnostics in the log file, uses Apple's captive-portal page to identify portal interception, and returns `Reachability { Online, CaptivePortal, Detail }`. `NetworkMonitor` now uses this result for throttling, double-confirmation, and user-facing offline/captive-portal log messages.
 
 ---
 
 ### Phase 6 — AutoConnect manager (core logic)
 **Goal:** The heart of the app — offscreen WebView2 portal login, matching `AutoConnectManager.swift` exactly.
 
-- [ ] **Attempt lifecycle:**
+- [x] **Attempt lifecycle:**
   - Token-based invalidation (incrementing `currentAttempt`).
   - `isConnecting` flag, `attemptPhase` enum (Idle / Preflight / LoadingPortal / WaitingForLoginForm / Verifying).
   - Phase-specific watchdogs: portal navigation 18 s, login-form discovery 25 s, hard watchdog 120 s.
-- [ ] **Preflight:**
+- [x] **Preflight:**
   - If reachability says online → `AlreadyOnline`, done.
   - Else → load portal.
-- [ ] **Portal navigation:**
+- [x] **Portal navigation:**
   - Load `https://iac.srmist.edu.in/Connect/PortalMain` in the offscreen WebView2.
   - Only trust HTTPS on `iac.srmist.edu.in` (default port).
   - Handle navigation errors, TLS failures, redirects outside the trusted host.
-- [ ] **Credential injection (JavaScript):**
+- [x] **Credential injection (JavaScript):**
   - Port the exact same JS blob: find `input[type="password"]`, find sibling text/email/tel input, set values via native property descriptor + `input`/`change` events.
   - Prefer `oAuthentication.submitActiveForm()`, fall back to visible submit controls, then `form.requestSubmit()`.
   - Report outcome back to C# via `window.chrome.webview.postMessage(...)` (WebView2 equivalent of `window.webkit.messageHandlers.srm.postMessage`).
-- [ ] **Verification:**
+- [x] **Verification:**
   - After "submitted" → wait 3 s → poll reachability up to 5 times, 3 s apart.
-- [ ] **Retry ladder:**
+- [x] **Retry ladder:**
   - Network-not-ready: 1 s, 2 s, 3 s.
   - Normal retries: 3 s, 8 s, 20 s, 45 s (+ jitter).
   - Give-up cooldowns: 1 min, 3 min, 5 min, 10 min.
   - Missing-credentials backoff: 5 min.
-- [ ] **Force Connect:** clears backoff, resets retry chain, works even off SRMIST.
-- [ ] **Cancellation:** leaving SRMIST, readiness loss, system wake all cancel correctly.
-- [ ] **`credentialsChanged()`:** clear backoff, retry immediately if on SRMIST.
+- [x] **Force Connect:** clears backoff, resets retry chain, works even off SRMIST.
+- [x] **Cancellation:** leaving SRMIST, readiness loss, system wake all cancel correctly.
+- [x] **`credentialsChanged()`:** clear backoff, retry immediately if on SRMIST.
 
 **Deliverable:** The full login-and-retry engine, working end-to-end with WebView2.
+
+**Status:** Implemented. `Core/AutoConnectManager.cs` now owns login attempts, retry/backoff state, offscreen WebView2 portal navigation, JavaScript credential injection, reachability verification, Force Connect, cancellations, and credential-change handling. Dashboard, tray, settings, and network monitor are wired to it. Build, startup smoke test, and lint check passed; live portal validation should be done on SRMIST when the captive portal is actually intercepting.
 
 ---
 
 ### Phase 7 — Notifications
-**Goal:** Toast notification + sound on successful login.
+**Goal:** Windows notification + sound on successful login.
 
-- [ ] Show a Windows toast: title "Connected to SRM Wi-Fi", body "You're all set."
-- [ ] Play a system sound (e.g. `SystemSounds.Asterisk` or a bundled `.wav`).
-- [ ] Show toast even when the app window is focused (Windows toasts do this by default).
+- [x] Show a Windows tray notification: title "Connected to SRM Wi-Fi", body "You're all set."
+- [x] Play a system sound (e.g. `SystemSounds.Asterisk` or a bundled `.wav`).
+- [x] Show the notification even when the app window is focused.
 
 **Deliverable:** User sees and hears a successful connection.
+
+**Status:** Completed. `Core/NotificationService.cs` raises a connected notification request and plays `SystemSounds.Asterisk`; `App.xaml.cs` displays it through the existing system tray icon. This avoids WinRT toast registration issues for the unpackaged WPF app while still surfacing a Windows notification to the user.
 
 ---
 
 ### Phase 8 — Open at Login
 **Goal:** Toggle to start the app on Windows login.
 
-- [ ] Write / remove `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\SRMAutoconnect` pointing to the exe path.
-- [ ] On `SettingsView` appear, read the registry to sync the toggle state.
-- [ ] Log success / failure.
+- [x] Write / remove `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\SRMAutoconnect` pointing to the exe path.
+- [x] On `SettingsView` appear, read the registry to sync the toggle state.
+- [x] Log success / failure.
 
 **Deliverable:** The app launches on boot when enabled.
+
+**Status:** Completed. `Core/StartupService.cs` manages the current-user Run key, and `SettingsView` syncs and toggles Open at Login with user-facing status messages and log entries. Build, app startup smoke test, registry round-trip self-test, and lint check passed.
 
 ---
 
