@@ -110,6 +110,7 @@ public partial class SettingsView : UserControl
             PasswordBox.Clear();
             UpdatePasswordHint();
             OpenAtLoginCheckBox.IsChecked = StartupService.Shared.IsEnabled();
+            ShowPortalWindowCheckBox.IsChecked = AutoConnectManager.Shared.ShowPortalWindow;
         }
         catch (Exception ex)
         {
@@ -120,6 +121,21 @@ public partial class SettingsView : UserControl
         {
             loadingSettings = false;
         }
+    }
+
+    private void ShowPortalWindowCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (loadingSettings)
+        {
+            return;
+        }
+
+        AutoConnectManager.Shared.SetShowPortalWindow(ShowPortalWindowCheckBox.IsChecked == true);
+        ShowNotice(
+            ShowPortalWindowCheckBox.IsChecked == true
+                ? "PORTAL DEBUG WINDOW ENABLED."
+                : "PORTAL DEBUG WINDOW HIDDEN.",
+            Theme.GreenBrush);
     }
 
     private void OpenAtLoginCheckBox_Changed(object sender, RoutedEventArgs e)

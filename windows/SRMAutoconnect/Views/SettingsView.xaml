@@ -48,6 +48,15 @@
                       Foreground="{x:Static helpers:Theme.GreenBrush}"
                       Unchecked="OpenAtLoginCheckBox_Changed" />
 
+            <CheckBox x:Name="ShowPortalWindowCheckBox"
+                      Margin="0,10,0,0"
+                      Checked="ShowPortalWindowCheckBox_Changed"
+                      Content="Show portal window (debug)"
+                      FontFamily="{x:Static helpers:Theme.MonoFont}"
+                      FontSize="13"
+                      Foreground="{x:Static helpers:Theme.GreenBrush}"
+                      Unchecked="ShowPortalWindowCheckBox_Changed" />
+
             <Button Margin="0,16,0,0"
                     Click="Save_Click"
                     Content="&gt; SAVE &lt;"

@@ -27,12 +27,18 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
 
     private const int PortalNavigationTimeoutSeconds = 18;
     private const int LoginFormTimeoutSeconds = 25;
+    private const int SubmitOutcomeTimeoutSeconds = 10;
     private const int AttemptHardTimeoutSeconds = 120;
 
     private static readonly string WebViewUserDataFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "SRMAutoconnect",
         "WebView2");
+
+    private static readonly string SettingsFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "SRMAutoconnect",
+        "settings.json");
 
     private Window? hostWindow;
     private WebView2? webView;
@@ -60,6 +66,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
     private DateTime? nextAttemptAt;
     private LoginResult? lastResult;
     private string? lastFailureReason;
+    private bool showPortalWindow;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -116,8 +123,27 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
 
     public string CurrentPhase => attemptPhase.ToString();
 
+    public bool ShowPortalWindow
+    {
+        get => showPortalWindow;
+        private set => SetField(ref showPortalWindow, value, nameof(ShowPortalWindow));
+    }
+
     private AutoConnectManager()
     {
+        ShowPortalWindow = ReadShowPortalWindow();
+        Logger.Shared.DebugEnabled = ShowPortalWindow;
+    }
+
+    public void SetShowPortalWindow(bool enabled)
+    {
+        ShowPortalWindow = enabled;
+        Logger.Shared.DebugEnabled = enabled;
+        WriteShowPortalWindow(enabled);
+        ApplyPortalWindowDebugState();
+        Logger.Shared.Log(enabled
+            ? "Portal debug window enabled."
+            : "Portal debug window hidden.");
     }
 
     public void AttemptLogin(bool force = false)
@@ -346,26 +372,58 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         attemptPhase = AttemptPhase.WaitingForLoginForm;
         var scriptMessage = await WaitForScriptMessageAsync(cancellationToken);
         EnsureLive(token);
+        await HandleScriptStageAsync(token, scriptMessage, cancellationToken);
+    }
 
+    private async Task HandleScriptStageAsync(int token, ScriptMessage scriptMessage, CancellationToken cancellationToken)
+    {
         switch (scriptMessage.Stage)
         {
             case "submitted":
                 attemptPhase = AttemptPhase.Verifying;
-                Logger.Shared.Debug($"Credentials submitted via '{scriptMessage.Detail}'. Verifying...");
-                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
-                await VerifyAsync(token, remaining: 8, cancellationToken);
+                Logger.Shared.Debug($"Credentials submitted via '{scriptMessage.Detail}'. Waiting for portal response...");
+                var outcome = await WaitForSubmitOutcomeAsync(cancellationToken);
+                EnsureLive(token);
+                await HandleSubmitOutcomeAsync(token, outcome, cancellationToken);
                 break;
             case "already":
                 attemptPhase = AttemptPhase.Verifying;
                 Logger.Shared.Debug("Portal reports an existing session. Verifying...");
                 await VerifyAsync(token, remaining: 3, cancellationToken);
                 break;
+            case "accepted":
+                attemptPhase = AttemptPhase.Verifying;
+                Logger.Shared.Debug($"Portal accepted login ({scriptMessage.Detail}). Verifying...");
+                await VerifyAsync(token, remaining: 8, cancellationToken);
+                break;
+            case "rejected":
+                throw new InvalidOperationException($"portal rejected: {scriptMessage.Detail}");
+            case "noresponse":
+                throw new InvalidOperationException($"submit produced no response ({scriptMessage.Detail})");
             case "nofields":
                 throw new InvalidOperationException($"login form never appeared ({scriptMessage.Detail})");
             case "nosubmit":
                 throw new InvalidOperationException("no submit button on the login form");
             default:
                 throw new InvalidOperationException($"login script reported unexpected stage '{scriptMessage.Stage}'");
+        }
+    }
+
+    private async Task HandleSubmitOutcomeAsync(int token, ScriptMessage outcome, CancellationToken cancellationToken)
+    {
+        switch (outcome.Stage)
+        {
+            case "accepted":
+            case "already":
+                Logger.Shared.Debug($"Portal accepted login ({outcome.Detail}). Verifying...");
+                await VerifyAsync(token, remaining: 8, cancellationToken);
+                break;
+            case "rejected":
+                throw new InvalidOperationException($"portal rejected: {outcome.Detail}");
+            case "noresponse":
+                throw new InvalidOperationException($"submit produced no response ({outcome.Detail})");
+            default:
+                throw new InvalidOperationException($"submit produced no response ({outcome.Stage}: {outcome.Detail})");
         }
     }
 
@@ -410,11 +468,13 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
                 ShowInTaskbar = false,
                 ShowActivated = false,
                 WindowStyle = WindowStyle.ToolWindow,
-                ResizeMode = ResizeMode.NoResize
+                ResizeMode = ResizeMode.NoResize,
+                Title = "SRM Autoconnect - portal"
             };
 
             webView ??= new WebView2 { Width = 1024, Height = 768 };
             hostWindow.Content = webView;
+            ApplyPortalWindowDebugState();
             if (!hostWindow.IsVisible)
             {
                 hostWindow.Show();
@@ -423,8 +483,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             Directory.CreateDirectory(WebViewUserDataFolder);
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: WebViewUserDataFolder);
             await webView.EnsureCoreWebView2Async(environment);
-            webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
-            webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            ApplyPortalWindowDebugState();
 
             if (!webViewHandlersAttached)
             {
@@ -482,6 +541,23 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             throw new InvalidOperationException($"login form did not become ready after {LoginFormTimeoutSeconds}s");
+        }
+
+        return await scriptMessageCompletion.Task;
+    }
+
+    private async Task<ScriptMessage> WaitForSubmitOutcomeAsync(CancellationToken cancellationToken)
+    {
+        scriptMessageCompletion ??= new TaskCompletionSource<ScriptMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var finished = await Task.WhenAny(
+            scriptMessageCompletion.Task,
+            Task.Delay(TimeSpan.FromSeconds(SubmitOutcomeTimeoutSeconds), cancellationToken));
+
+        if (finished != scriptMessageCompletion.Task)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return new ScriptMessage("noresponse", $"portal did not respond after {SubmitOutcomeTimeoutSeconds}s");
         }
 
         return await scriptMessageCompletion.Task;
@@ -550,6 +626,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         if (loginSubmittedForAttempt == currentAttempt)
         {
             Logger.Shared.Debug("Post-submit navigation; awaiting reachability verification.");
+            scriptMessageCompletion?.TrySetResult(new ScriptMessage("accepted", "post-submit navigation"));
             return;
         }
 
@@ -622,12 +699,27 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
                 ? detailElement.GetString() ?? string.Empty
                 : string.Empty;
 
+            if (stage is "discover")
+            {
+                Logger.Shared.Debug($"Portal form: {detail}");
+                return;
+            }
+
             if (stage is "submitted" or "already")
             {
                 loginSubmittedForAttempt = attempt;
+                RemoveInjectionScript();
             }
 
-            scriptMessageCompletion?.TrySetResult(new ScriptMessage(stage, detail));
+            var current = scriptMessageCompletion;
+            if (stage is "submitted")
+            {
+                // Arm the outcome wait before completing "submitted", so a fast
+                // post-submit navigation cannot land on an already-completed TCS.
+                scriptMessageCompletion = new TaskCompletionSource<ScriptMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            current?.TrySetResult(new ScriptMessage(stage, detail));
         }
         catch (Exception ex)
         {
@@ -772,8 +864,9 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
         webView.CoreWebView2.Stop();
-        webView.CoreWebView2.CookieManager.DeleteAllCookies();
-        Logger.Shared.Debug("Cleared WebView2 cookies for a fresh portal login.");
+        // macOS never wipes cookies between attempts. Clearing them here discarded
+        // the portal's session before RSA/AJAX login could finish.
+        Logger.Shared.Debug("Keeping WebView2 cookies so the portal session can continue.");
         return Task.CompletedTask;
     }
 
@@ -888,6 +981,82 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private void ApplyPortalWindowDebugState()
+    {
+        if (hostWindow is not null)
+        {
+            if (ShowPortalWindow)
+            {
+                hostWindow.WindowStyle = WindowStyle.SingleBorderWindow;
+                hostWindow.ResizeMode = ResizeMode.CanResize;
+                hostWindow.ShowInTaskbar = true;
+                hostWindow.Title = "SRM Autoconnect - portal (debug)";
+                hostWindow.Left = 80;
+                hostWindow.Top = 80;
+                hostWindow.Width = 1024;
+                hostWindow.Height = 768;
+                if (!hostWindow.IsVisible)
+                {
+                    hostWindow.Show();
+                }
+            }
+            else
+            {
+                hostWindow.WindowStyle = WindowStyle.ToolWindow;
+                hostWindow.ResizeMode = ResizeMode.NoResize;
+                hostWindow.ShowInTaskbar = false;
+                hostWindow.Title = "SRM Autoconnect - portal";
+                hostWindow.Left = -20000;
+                hostWindow.Top = -20000;
+            }
+        }
+
+        if (webView?.CoreWebView2 is not null)
+        {
+            webView.CoreWebView2.Settings.AreDevToolsEnabled = ShowPortalWindow;
+            webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = ShowPortalWindow;
+        }
+    }
+
+    private static bool ReadShowPortalWindow()
+    {
+        try
+        {
+            if (!File.Exists(SettingsFilePath))
+            {
+                return false;
+            }
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(SettingsFilePath));
+            return doc.RootElement.TryGetProperty("showPortalWindow", out var property)
+                && property.ValueKind is JsonValueKind.True;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void WriteShowPortalWindow(bool enabled)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(SettingsFilePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(
+                SettingsFilePath,
+                JsonSerializer.Serialize(new { showPortalWindow = enabled }));
+        }
+        catch (Exception ex)
+        {
+            Logger.Shared.Debug($"Could not save portal debug setting: {ex.Message}");
+        }
+    }
+
     private void SetField<T>(ref T field, T value, string propertyName)
     {
         if (EqualityComparer<T>.Default.Equals(field, value))
@@ -952,7 +1121,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             for (var i = 0; i < nodes.length; i++) {
               if (isVisible(nodes[i])) return nodes[i];
             }
-            return nodes.length ? nodes[0] : null;
+            return null;
           }
           function looksLoggedIn() {
             var t = (document.body ? document.body.innerText : '').toLowerCase();
@@ -961,10 +1130,29 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
               || t.indexOf('already connected') >= 0 || t.indexOf('you are connected') >= 0
               || t.indexOf('authentication successful') >= 0;
           }
+          function rsaReady() {
+            try { return !!window.cpRSAobj; } catch (e) { return false; }
+          }
+          function describeEl(el) {
+            if (!el) return 'none';
+            return (el.tagName || '') + '#' + (el.id || '') + '.' + (el.type || '') + (isVisible(el) ? ' vis' : ' hid');
+          }
+          function iframeDepth() {
+            var depth = 0, win = window;
+            try {
+              while (win.parent && win.parent !== win) { depth++; win = win.parent; }
+            } catch (e) {}
+            return depth;
+          }
           function describePage() {
             var iframeCount = 0;
             try { iframeCount = document.querySelectorAll('iframe').length; } catch (e) {}
-            return (document.title || '') + ' iframes=' + iframeCount + ' path=' + String(location.pathname || '');
+            return (document.title || '')
+              + ' ready=' + document.readyState
+              + ' rsa=' + rsaReady()
+              + ' iframes=' + iframeCount
+              + ' iframeDepth=' + iframeDepth()
+              + ' path=' + String(location.pathname || '');
           }
           function findPassword(root) {
             root = root || document;
@@ -972,19 +1160,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             try {
               nodes = root.querySelectorAll('input[type="password"], input[name*="pass" i], input[id*="password" i], input[id*="LoginUserPassword_auth_password" i]');
             } catch (e) {}
-            var pass = firstVisible(nodes);
-            if (pass) return pass;
-            var frames = [];
-            try { frames = root.querySelectorAll('iframe'); } catch (e) { return null; }
-            for (var i = 0; i < frames.length; i++) {
-              try {
-                var doc = frames[i].contentDocument || (frames[i].contentWindow && frames[i].contentWindow.document);
-                if (!doc) continue;
-                var nested = findPassword(doc);
-                if (nested) return nested;
-              } catch (e) {}
-            }
-            return null;
+            return firstVisible(nodes);
           }
           function isVisible(el) {
             if (!el) return false;
@@ -1001,7 +1177,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             var t = (el.type || '').toLowerCase();
             return t === 'submit' || t === 'button' || t === 'image' || t === 'reset';
           }
-          function findSubmit(scope) {
+          function findSubmit(scope, ownerDoc) {
             var selectors = [
               '#UserCheck_Login_Button',
               '[onclick*="submitActiveForm"]',
@@ -1012,8 +1188,9 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
               'input[id*="submit" i]', 'button[id*="submit" i]',
               'a[id*="submit" i]', 'input[type="button"]', 'button'
             ];
-            var roots = [scope];
-            if (scope !== document) roots.push(document);
+            var roots = [];
+            if (scope) roots.push(scope);
+            if (ownerDoc && ownerDoc !== scope) roots.push(ownerDoc);
             for (var r = 0; r < roots.length; r++) {
               for (var s = 0; s < selectors.length; s++) {
                 var found;
@@ -1025,17 +1202,70 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             }
             return null;
           }
+          function portalErrorText() {
+            var el = document.getElementById('LoginSequencePage_Content');
+            if (!el) return '';
+            var t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+            var lower = t.toLowerCase();
+            var hints = ['invalid', 'incorrect', 'denied', 'failed', 'wrong password', 'authentication unsuccessful', 'unable to authenticate', 'login error'];
+            for (var i = 0; i < hints.length; i++) {
+              if (lower.indexOf(hints[i]) >= 0) return t.slice(0, 180);
+            }
+            return '';
+          }
+          function watchOutcome(submitDetail) {
+            var startHref = String(location.href || '');
+            var ticks = 0;
+            var watch = setInterval(function() {
+              ticks++;
+              try {
+                if (window.cpRSAobj && window.cpRSAobj.isAuthenticated) {
+                  clearInterval(watch);
+                  report('accepted', 'cpRSAobj.isAuthenticated');
+                  return;
+                }
+              } catch (e) {}
+              if (looksLoggedIn()) {
+                clearInterval(watch);
+                report('accepted', 'portal session');
+                return;
+              }
+              var href = String(location.href || '');
+              if (href && href !== startHref) {
+                clearInterval(watch);
+                report('accepted', 'navigated');
+                return;
+              }
+              var err = portalErrorText();
+              if (err) {
+                clearInterval(watch);
+                report('rejected', err);
+                return;
+              }
+              if (ticks >= 40) {
+                clearInterval(watch);
+                report('noresponse', submitDetail || 'no portal response after 10s');
+              }
+            }, 250);
+          }
 
           var attempts = 0;
+          var readyTicks = 0;
+          var lastReadyFp = '';
           var timer = setInterval(function() {
             attempts++;
+            if (document.readyState !== 'complete') {
+              if (attempts > 100) { clearInterval(timer); report('nofields', 'document never reached complete (' + describePage() + ')'); }
+              return;
+            }
             var pass = findPassword(document);
             if (!pass) {
               if (looksLoggedIn()) { clearInterval(timer); report('already', document.title); return; }
-              if (attempts > 48) { clearInterval(timer); report('nofields', 'no password field after 24s (' + describePage() + ')'); }
+              if (attempts > 100) { clearInterval(timer); report('nofields', 'no visible password field after 25s (' + describePage() + ')'); }
               return;
             }
-            var scope = pass.form || pass.ownerDocument || document;
+            var ownerDoc = pass.ownerDocument || document;
+            var scope = pass.form || ownerDoc;
             var user = null;
             var inputs = [];
             try { inputs = scope.querySelectorAll('input'); } catch (e) {}
@@ -1046,43 +1276,73 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             }
             user = firstVisible(userNodes);
             if (!user) {
-              if (attempts > 48) { clearInterval(timer); report('nofields', 'no username field after 24s (' + describePage() + ')'); }
+              if (attempts > 100) { clearInterval(timer); report('nofields', 'no visible username field after 25s (' + describePage() + ')'); }
               return;
             }
 
-            var win = (pass.ownerDocument && pass.ownerDocument.defaultView) || window;
+            var win = (ownerDoc && ownerDoc.defaultView) || window;
             var handler = portalHandler(win) || portalHandler(window);
-            var btn = findSubmit(scope);
-            if (!handler && !btn && attempts < 40) return;
+            var btn = findSubmit(scope, ownerDoc);
+            if (!rsaReady() || (!handler && !btn)) {
+              if (attempts > 100) {
+                clearInterval(timer);
+                if (!rsaReady()) report('nofields', 'cpRSAobj never became ready (' + describePage() + ')');
+                else report('nosubmit', 'no submit control found');
+              }
+              return;
+            }
+
+            var fp = [pass.id || '', user.id || '', handler ? 'h' : '', btn ? (btn.id || btn.tagName) : '', 'rsa'].join('|');
+            if (fp !== lastReadyFp) { lastReadyFp = fp; readyTicks = 1; return; }
+            readyTicks++;
+            if (readyTicks < 2) return;
 
             clearInterval(timer);
+            if (!window.__srmDiscovered) {
+              window.__srmDiscovered = true;
+              report('discover', 'ready=' + document.readyState
+                + ' rsa=' + rsaReady()
+                + ' user=' + describeEl(user)
+                + ' pass=' + describeEl(pass)
+                + ' btn=' + describeEl(btn)
+                + ' handler=' + !!handler
+                + ' iframeDepth=' + iframeDepth());
+            }
+
             setValue(user, {{JsonSerializer.Serialize(credentials.Username)}});
             setValue(pass, {{JsonSerializer.Serialize(credentials.Password)}});
 
             setTimeout(function() {
               setValue(user, {{JsonSerializer.Serialize(credentials.Username)}});
               setValue(pass, {{JsonSerializer.Serialize(credentials.Password)}});
-              btn = findSubmit(scope) || btn;
+              btn = findSubmit(scope, ownerDoc) || btn;
               handler = portalHandler(win) || portalHandler(window) || handler;
-              if (btn) {
-                try { btn.click(); } catch (e) {}
-                report('submitted', (btn.tagName || '') + '#' + (btn.id || '') + '.' + (btn.type || ''));
-                return;
-              }
+              var submitDetail = '';
               if (handler) {
                 try { handler(); } catch (e) {}
-                report('submitted', 'oAuthentication.submitActiveForm');
+                submitDetail = 'oAuthentication.submitActiveForm';
+                report('submitted', submitDetail);
+                watchOutcome(submitDetail);
+                return;
+              }
+              if (btn) {
+                try { btn.click(); } catch (e) {}
+                submitDetail = (btn.tagName || '') + '#' + (btn.id || '') + '.' + (btn.type || '');
+                report('submitted', submitDetail);
+                watchOutcome(submitDetail);
                 return;
               }
               if (pass.form) {
                 if (typeof pass.form.requestSubmit === 'function') pass.form.requestSubmit();
                 else pass.form.submit();
-                report('submitted', 'native form request');
+                submitDetail = 'native form request';
+                report('submitted', submitDetail);
+                watchOutcome(submitDetail);
                 return;
               }
               report('nosubmit', 'no submit control found');
             }, 400);
-          }, 500);
+          }, 250);
         })();
         """;
     }
