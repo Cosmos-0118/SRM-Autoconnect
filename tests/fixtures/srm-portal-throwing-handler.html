@@ -1,0 +1,7 @@
+<!doctype html><html><body>
+<form id="LoginUserPassword_auth_form"><input type="text" id="LoginUserPassword_auth_username"><input type="password" id="LoginUserPassword_auth_password"><input type="submit" style="display:none"></form>
+<a id="UserCheck_Login_Button">Log In</a><script>
+window.__clicked=[]; window.__earlyClicks=0; window.__handlerCalls=0;
+document.getElementById('UserCheck_Login_Button').addEventListener('click',function(){window.__clicked.push('A#UserCheck_Login_Button');if(!window.oAuthentication)window.__earlyClicks++;});
+window.__expectedStage='submiterror';window.oAuthentication={submitActiveForm:function(){window.__handlerCalls++;throw new Error('AN1234 s3cr3t ?secret');}};
+</script></body></html>

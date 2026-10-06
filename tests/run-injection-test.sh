@@ -34,20 +34,18 @@ open(os.path.join(work, 'injected.js'), 'w').write(js)
 print(f"  extracted {len(js)} chars")
 PY
 
+swiftc -module-cache-path "$WORK/module-cache" -target "$(uname -m)-apple-macosx13.0" "$ROOT/tests/InjectionHarness.swift" -o "$WORK/harness"
 run_fixture() {
   local fixture="$1"
   local fixture_dir="$WORK/$fixture"
   mkdir -p "$fixture_dir"
   cp "$ROOT/tests/fixtures/$fixture.html" "$fixture_dir/portal.html"
   cp "$WORK/injected.js" "$fixture_dir/injected.js"
-
-  echo "Building harness for $fixture..."
-  sed "s#__FIXTURE_DIR__#$fixture_dir#g" "$ROOT/tests/InjectionHarness.swift" > "$fixture_dir/main.swift"
-  swiftc -target "$(uname -m)-apple-macosx13.0" "$fixture_dir/main.swift" -o "$fixture_dir/harness"
-
   echo "Running $fixture..."
-  "$fixture_dir/harness"
+  "$WORK/harness" "$fixture_dir"
 }
-
-run_fixture portal-jsbutton
-run_fixture srm-portal
+if [ "$#" -gt 0 ]; then
+  for fixture in "$@"; do run_fixture "$fixture"; done
+else
+  for fixture in portal-jsbutton srm-portal srm-portal-delayed-handler srm-portal-missing-handler srm-portal-throwing-handler; do run_fixture "$fixture"; done
+fi

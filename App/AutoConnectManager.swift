@@ -46,6 +46,8 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     // running one at a time.
     private var currentAttempt: Int = 0
     private var currentAttemptWasForced = false
+    private var attemptStartedAt = ProcessInfo.processInfo.systemUptime
+    private var phaseStartedAt = ProcessInfo.processInfo.systemUptime
 
     private var retryCount = 0
     /// Invalidates delayed retry closures. Merely clearing `nextAttemptAt` is not
@@ -91,6 +93,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         case preflight
         case loadingPortal
         case waitingForLoginForm
+        case waitingForPortalHandler
         case verifying
     }
     private var attemptPhase: AttemptPhase = .idle
@@ -111,44 +114,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// unreachable" line retains its real cause rather than just its last error.
     private var portalFailures: [String] = []
 
-    /// Non-Apple canaries. SRM's portal (like most enterprise NACs) allow-lists the
-    /// OS connectivity-check domains straight through the walled garden *before*
-    /// login, so those report "online" while everything else is blocked. Requiring
-    /// a quorum of ordinary hosts avoids that false positive — and requiring only a
-    /// quorum, rather than all of them, means one host being blocked or down can't
-    /// convince the app it is permanently offline and make it hammer the portal.
-    /// Each canary must be a *different operator*, or the quorum is theatre.
-    ///
-    /// api.github.com/zen used to be the third. It was silently useless: the
-    /// unauthenticated GitHub API allows 60 requests/hour per IP, and polling
-    /// every 15s issues 240/hour, so the app exhausted its own quota within
-    /// about fifteen minutes of every hour and then got HTTP 403 for the rest.
-    /// Measured across a 20-hour log: example.com 94% success, cloudflare.com
-    /// 94%, api.github.com 36%. On a campus NAT the shared public IP makes it
-    /// worse still. The practical effect was that a designed 2-of-3 quorum
-    /// degraded to 2-of-2 with no fault tolerance, so a single blip on either
-    /// surviving host read as "offline" and kicked off a pointless portal login.
-    ///
-    /// www.mozilla.org/robots.txt replaces it: 66 bytes, no rate limiting, and
-    /// an operator independent of Cloudflare, Apple and GitHub.
-    private let canaries: [(url: URL, expect: String?)] = [
-        (URL(string: "https://example.com")!, "Example Domain"),
-        (URL(string: "https://cloudflare.com/cdn-cgi/trace")!, "fl="),
-        (URL(string: "https://www.mozilla.org/robots.txt")!, "user-agent")
-    ]
-    private let canaryQuorum = 2
-
-    private lazy var probeSession: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        cfg.timeoutIntervalForRequest = 6
-        cfg.timeoutIntervalForResource = 8
-        cfg.waitsForConnectivity = false
-        cfg.urlCache = nil
-        cfg.httpCookieStorage = nil
-        cfg.httpShouldSetCookies = false
-        return URLSession(configuration: cfg)
-    }()
+    private lazy var reachabilityProbe = ReachabilityProbe(diagnostic: { Logger.shared.debug($0) })
 
     private override init() {
         self.totalSuccesses = UserDefaults.standard.integer(forKey: "totalSuccesses")
@@ -276,7 +242,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         portalFailures = []
         sawNetworkNotReadyInAttempt = false
         currentAttemptWasForced = force
-        attemptPhase = .preflight
+        attemptStartedAt = ProcessInfo.processInfo.systemUptime
+        phaseStartedAt = attemptStartedAt
+        Logger.shared.debug("Attempt \(token) trigger=\(force ? "force" : (knownReachability == nil ? "preflight/retry" : "confirmed-outage")) started")
+        transition(to: .preflight)
         isConnecting = true
         nextAttemptAt = nil
 
@@ -336,7 +305,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         }
         let url = portalCandidates[portalIndex]
         Logger.shared.debug("Loading portal candidate \(portalIndex + 1)/\(portalCandidates.count): \(url.absoluteString)")
-        attemptPhase = .loadingPortal
+        transition(to: .loadingPortal)
         webView.stopLoading()
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -419,7 +388,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         let navigationID = ObjectIdentifier(navigation)
         guard injectedNavigation != navigationID else { return }
         injectedNavigation = navigationID
-        attemptPhase = .waitingForLoginForm
+        transition(to: .waitingForLoginForm)
         injectLogin(token)
     }
 
@@ -495,6 +464,8 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         }
         let hadQuery = !(parts.percentEncodedQuery ?? "").isEmpty
         let hadFragment = !(parts.percentEncodedFragment ?? "").isEmpty
+        parts.user = nil
+        parts.password = nil
         parts.query = nil
         parts.fragment = nil
         let base = parts.string ?? url.host ?? "(url)"
@@ -590,8 +561,8 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
           function findSubmit(scope) {
             // SRM's live portal deliberately does not submit this form as HTML.
             // Its login action encrypts the password and sends an AJAX request
-            // through this handler. Prefer the handler itself below; this selector
-            // is the fallback for portal versions that expose only the anchor.
+            // through this handler. Recognized SRM forms wait for it below;
+            // generic submit controls remain available for other form variants.
             var selectors = [
               '#UserCheck_Login_Button',
               '[onclick*="submitActiveForm"]',
@@ -616,13 +587,14 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             return null;
           }
 
-          var attempts = 0;
+          var started = Date.now();
+          var reportedWaiting = false;
           var timer = setInterval(function() {
-            attempts++;
+            var expired = Date.now() - started >= 24000;
             var pass = document.querySelector('input[type="password"]');
             if (!pass) {
               if (looksLoggedIn()) { clearInterval(timer); report('already', document.title); return; }
-              if (attempts > 48) { clearInterval(timer); report('nofields', 'no password field after 24s'); }
+              if (expired) { clearInterval(timer); report('nofields', 'no password field after 24s'); }
               return;
             }
             // Scope to the password field's own form so a stray search box or a
@@ -635,7 +607,18 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
               if (t === 'text' || t === 'email' || t === 'tel') { user = inputs[i]; break; }
             }
             if (!user) {
-              if (attempts > 48) { clearInterval(timer); report('nofields', 'no username field after 24s'); }
+              if (expired) { clearInterval(timer); report('nofields', 'no username field after 24s'); }
+              return;
+            }
+
+            // SRM renders fields before its authentication scripts are ready.
+            // Its anchor/form identify a handler-based portal even before the
+            // global object exists. Never dispatch a generic click in that state.
+            var needsHandler = !!document.querySelector('#UserCheck_Login_Button, #LoginUserPassword_auth_form, [onclick*="submitActiveForm"]');
+            var handlerReady = window.oAuthentication && typeof window.oAuthentication.submitActiveForm === 'function';
+            if (needsHandler && !handlerReady) {
+              if (!reportedWaiting) { reportedWaiting = true; report('waitinghandler', 'authentication scripts loading'); }
+              if (expired) { clearInterval(timer); report('handlernotready', 'portal authentication not ready after 24s'); }
               return;
             }
 
@@ -648,12 +631,13 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             // to its Login endpoint. Native form.submit() would bypass both and
             // can make valid credentials look rejected.
             try {
-              if (window.oAuthentication && typeof window.oAuthentication.submitActiveForm === 'function') {
+              if (handlerReady) {
+                report('handlerready', 'authentication handler callable');
                 window.oAuthentication.submitActiveForm();
                 report('submitted', 'oAuthentication.submitActiveForm');
                 return;
               }
-            } catch (e) {}
+            } catch (e) { report('submiterror', 'portal authentication handler failed'); return; }
 
             var btn = findSubmit(scope);
             // Report what was clicked by its identity, never by its value: on a
@@ -671,8 +655,11 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         """
 
         after(loginFormTimeout, token) { [weak self] in
-            guard let self, self.attemptPhase == .waitingForLoginForm else { return }
-            self.fail(token, "login form did not become ready after \(Int(self.loginFormTimeout))s")
+            guard let self,
+                  self.attemptPhase == .waitingForLoginForm || self.attemptPhase == .waitingForPortalHandler else { return }
+            self.fail(token, self.attemptPhase == .waitingForPortalHandler
+                ? "portal authentication did not become ready after \(Int(self.loginFormTimeout))s"
+                : "login form did not become ready after \(Int(self.loginFormTimeout))s")
         }
 
         webView.evaluateJavaScript(js) { [weak self] _, error in
@@ -695,20 +682,33 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         let detail = (body["detail"] as? String) ?? ""
 
         switch stage {
+        case "waitinghandler":
+            guard loginSubmittedForAttempt != token else { return }
+            transition(to: .waitingForPortalHandler)
+        case "handlerready":
+            guard loginSubmittedForAttempt != token else { return }
+            transition(to: .waitingForLoginForm)
+            Logger.shared.debug("Attempt \(token) authentication handler ready")
         case "submitted":
+            guard loginSubmittedForAttempt != token else { return }
             loginSubmittedForAttempt = token
-            attemptPhase = .verifying
-            Logger.shared.debug("Credentials submitted via '\(detail)'. Verifying...")
-            after(3, token) { self.verify(token, remaining: 5) }
+            transition(to: .verifying)
+            Logger.shared.debug("Attempt \(token) submit dispatched via '\(detail)'; verifying internet")
+            verify(token, remaining: 5)
         case "already":
+            guard loginSubmittedForAttempt != token else { return }
             loginSubmittedForAttempt = token
-            attemptPhase = .verifying
+            transition(to: .verifying)
             Logger.shared.debug("Portal reports an existing session. Verifying...")
             verify(token, remaining: 3)
         case "nofields":
             fail(token, "login form never appeared (\(detail))")
         case "nosubmit":
             fail(token, "no submit button on the login form")
+        case "handlernotready":
+            fail(token, "portal authentication did not become ready after 24s")
+        case "submiterror":
+            fail(token, "portal authentication handler failed before verification")
         default:
             Logger.shared.debug("Script reported '\(stage)': \(detail)")
         }
@@ -720,7 +720,9 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// takes an unpredictable moment to actually open after accepting the form, and
     /// one early probe was being counted as an outright login failure.
     private func verify(_ token: Int, remaining: Int) {
-        attemptPhase = .verifying
+        guard isLive(token) else { return }
+        transition(to: .verifying)
+        Logger.shared.debug("Attempt \(token) verification checks remaining=\(remaining)")
         probeReachability(quiet: true) { [weak self] state in
             guard let self, self.isLive(token) else { return }
             if state.online {
@@ -737,74 +739,33 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
 
     // MARK: - Reachability
 
-    struct Reachability {
-        let online: Bool
-        let captivePortal: Bool
-        let detail: String
-    }
+    typealias Reachability = ReachabilityProbe.Result
 
-    /// Convenience wrapper for callers that only care whether we are online.
     func probeInternet(completion: @escaping (Bool) -> Void) {
         probeReachability(quiet: true) { completion($0.online) }
     }
 
     func probeReachability(quiet: Bool = false, completion: @escaping (Reachability) -> Void) {
         if !quiet { Logger.shared.log("Verifying internet connectivity...") }
-
-        let group = DispatchGroup()
-        var successes = 0
-        var names: [String] = []
-        var portalIntercept = false
-        let lock = NSLock()
-
-        for canary in canaries {
-            group.enter()
-            probe(url: canary.url, expect: canary.expect) { ok, _ in
-                lock.lock()
-                if ok { successes += 1; names.append(canary.url.host ?? "?") }
-                lock.unlock()
-                group.leave()
-            }
+        reachabilityProbe.run { state in
+            Logger.shared.debug("Reachability: \(state.online ? "online" : "offline") — \(state.detail)")
+            if !quiet && !state.online { Logger.shared.log("No internet. (\(state.detail))") }
+            completion(state)
         }
-
-        // Apple's probe is used only to distinguish "a portal is intercepting us"
-        // from "the network is simply dead" — never as evidence of being online,
-        // because the walled garden lets it through before login.
-        group.enter()
-        probe(url: URL(string: "http://captive.apple.com/hotspot-detect.html")!, expect: nil) { ok, body in
-            let intercepted = ok && !(body ?? "").contains("Success")
-            lock.lock(); portalIntercept = intercepted; lock.unlock()
-            group.leave()
-        }
-
-        group.notify(queue: .main) {
-            let online = successes >= self.canaryQuorum
-            let detail = "\(successes)/\(self.canaries.count) canaries ok\(names.isEmpty ? "" : " [\(names.joined(separator: ", "))]")\(portalIntercept ? ", portal intercepting" : "")"
-            Logger.shared.debug("Reachability: \(online ? "online" : "offline") — \(detail)")
-            if !quiet && !online { Logger.shared.log("No internet. (\(detail))") }
-            completion(Reachability(online: online, captivePortal: portalIntercept && !online, detail: detail))
-        }
-    }
-
-    private func probe(url: URL, expect: String?, completion: @escaping (Bool, String?) -> Void) {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 6
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        probeSession.dataTask(with: request) { data, response, _ in
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let body = data.flatMap { String(data: $0, encoding: .utf8) }
-            guard (200...299).contains(status) else { return completion(false, body) }
-            guard let expect else { return completion(true, body) }
-            // Case-insensitive: these are third-party pages we do not control, and
-            // a canary that silently starts failing because someone re-cased a
-            // header in their robots.txt is a canary that erodes the quorum
-            // without anyone noticing — which is exactly how the GitHub one rotted.
-            completion(body?.range(of: expect, options: .caseInsensitive) != nil, body)
-        }.resume()
     }
 
     // MARK: - Attempt resolution
+
+    private func transition(to phase: AttemptPhase) {
+        guard phase != attemptPhase else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if attemptPhase != .idle {
+            Logger.shared.debug("Attempt \(currentAttempt) phase=\(attemptPhase) elapsed=\(String(format: "%.3f", now - phaseStartedAt))s total=\(String(format: "%.3f", now - attemptStartedAt))s")
+        }
+        attemptPhase = phase
+        phaseStartedAt = now
+        if phase != .idle { Logger.shared.debug("Attempt \(currentAttempt) phase=\(phase) started") }
+    }
 
     /// A continuation belongs to the live attempt only if its token is still current
     /// *and* that attempt has not already resolved.
@@ -823,8 +784,8 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// callback from this attempt a no-op, so nothing can resolve it twice.
     private func finish(_ token: Int) {
         guard isLive(token) else { return }
+        transition(to: .idle)
         currentAttempt &+= 1
-        attemptPhase = .idle
         isConnecting = false
         navigationAttempts.removeAll(keepingCapacity: true)
         activePortalNavigation = nil
@@ -983,6 +944,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             let delay = networkNotReadyDelays[networkNotReadyRetries] + Double.random(in: 0...0.5)
             networkNotReadyRetries += 1
             Logger.shared.log("Network not ready yet (\(reason)). Retrying in \(Int(delay))s (\(networkNotReadyRetries)/\(networkNotReadyDelays.count)).")
+            Logger.shared.debug("Attempt \(token) retry wait=\(String(format: "%.3f", delay))s")
             nextAttemptAt = Date().addingTimeInterval(delay)
             let generation = retryScheduleGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -1004,6 +966,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             let delay = retryDelays[retryCount] + Double.random(in: 0...1.5)
             retryCount += 1
             Logger.shared.log("Login failed (\(reason)). Retry \(retryCount)/\(retryDelays.count) in \(Int(delay))s.")
+            Logger.shared.debug("Attempt \(token) retry wait=\(String(format: "%.3f", delay))s")
             nextAttemptAt = Date().addingTimeInterval(delay)
             let generation = retryScheduleGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -1021,6 +984,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             consecutiveGiveUps += 1
             retryCount = 0
             networkNotReadyRetries = 0
+            Logger.shared.debug("Attempt \(token) cooldown wait=\(Int(cooldown))s")
             nextAttemptAt = Date().addingTimeInterval(cooldown)
             Logger.shared.log("Login failed (\(reason)). Giving up; next try in \(Int(cooldown / 60))m\(Int(cooldown) % 60)s.")
             showResult(.failure)

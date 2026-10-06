@@ -6,9 +6,9 @@ The app has no Dock icon and no main window. Click the Wi-Fi icon in the menu ba
 
 ## What the app actually monitors
 
-The app considers only the Wi-Fi SSID `SRMIST` to be an SRM network. It reads the SSID with CoreWLAN, polls it every five seconds, listens for network-path changes, and checks again five seconds after the Mac wakes.
+The Mac app recognizes Wi-Fi names containing `SRMIST` (case-insensitive), including campus variants. It reads the SSID with CoreWLAN every five seconds and listens for network-path changes. On wake it checks immediately if the current network is ready, with a five-second fallback while the interface recovers.
 
-On macOS 14 and later, macOS requires Location Services permission before an app can read the current Wi-Fi name. Without that permission, SRM Autoconnect cannot automatically identify `SRMIST`.
+macOS requires Location Services permission before an app can read the current Wi-Fi name. Without that permission, SRM Autoconnect cannot automatically identify `SRMIST`.
 
 While connected to `SRMIST`, the app probes external sites to decide whether the internet is available. It requires at least two of these three checks to pass:
 
@@ -16,7 +16,9 @@ While connected to `SRMIST`, the app probes external sites to decide whether the
 - `https://cloudflare.com/cdn-cgi/trace` contains `fl=`
 - `https://www.mozilla.org/robots.txt` contains `user-agent`
 
-It also checks Apple's captive-portal page only to tell a captive-portal interception from a general outage. An Apple connectivity response alone is never treated as proof of internet access.
+It also checks Apple's captive-portal page only to distinguish interception from a general outage. An Apple connectivity response alone never proves internet access. A probe completes as soon as two ordinary sites pass and cancels unused requests; request/resource budgets remain six/eight seconds.
+
+An explicit interception with insufficient ordinary-host reachability can trigger login after one batch. Ambiguous outages still require two negative batches separated by three seconds. While online, connectivity checks are eligible every 15 seconds so a session expiring on the same Wi-Fi does not wait the previous 60-second throttle. This increases nominal steady-state request starts from roughly 240 to 960 per hour (720 ordinary requests plus 240 Apple diagnostics); early cancellation reduces unnecessary response waiting but does not guarantee fewer request starts.
 
 ## Login behavior
 
@@ -26,7 +28,8 @@ When the probes show that the internet is unavailable, the app:
 2. Refuses to inject credentials unless the loaded page remains HTTPS on `iac.srmist.edu.in` and uses the default HTTPS port.
 3. Finds the password field and a text, email, or telephone username field in the same form.
 4. Sets both fields and dispatches `input` and `change` events so portal pages with framework-managed form state receive the update.
-5. Uses the portal's own authentication handler when available (this preserves SRM's password-encryption/AJAX flow), otherwise activates a real submit control, then repeatedly checks internet reachability to confirm the portal actually opened access.
+5. For recognized SRM forms, waits for the portal's authentication handler before submitting through its encryption/AJAX flow. If the handler never becomes ready or throws, reports that specific failure instead of falling back to an early button click or native submit. Generic form variants can still use a real submit control.
+6. Starts internet verification immediately after dispatch and repeats negative checks at three-second intervals. Dispatch is not considered success; ordinary-host quorum must confirm usable internet.
 
 An attempt has phase-specific watchdogs: portal navigation is stopped after 18 seconds, the dynamically rendered login form is given 25 seconds, and a 120-second final watchdog covers unexpected WebKit/JavaScript stalls without interrupting the bounded reachability-verification loop. A failed attempt retries after approximately 3, 8, 20, and 45 seconds (with a small random delay). After those retries are exhausted, the next automatic attempt is delayed for 1, 3, 5, then 10 minutes. Leaving `SRMIST` cancels an in-progress login and discards pending retries.
 
@@ -44,7 +47,15 @@ The dashboard persists its success count, failure count, and last successful con
 ~/Library/Logs/SRMAutoconnect.log
 ```
 
-The file rotates at roughly 1 MB, keeping one previous file as `SRMAutoconnect.log.1`.
+The file rotates at roughly 1 MB, keeping one previous file as `SRMAutoconnect.log.1`. Diagnostics include attempt/network generation, trigger, monotonic phase durations, and canary host/status/error/timing. URL userinfo, queries, fragments, credentials, and response bodies are excluded from these diagnostics.
+
+## Mac regression checks
+
+Run `bash tests/run-injection-test.sh` in a normal Mac GUI session; it opens local fixture windows and uses fake credentials only. The fixtures cover generic submission, SRM submission, delayed/missing authentication initialization, and a throwing authentication handler. The harness fails if inspection returns no valid JSON or exceeds its deadline.
+
+Run `bash tests/run-reachability-test.sh`, `bash tests/run-connection-detection-test.sh`, and `bash tests/run-verification-test.sh` for controlled URLSession responses, real monitor decisions with injected system observations, and production verification/token logic extracted into a local harness. No campus login or Keychain access occurs in these tests.
+
+These checks establish local behavior. Post-change campus timings, five fresh joins, five wake recoveries, real session expiry, and physical VPN/portal failure cases remain deployment validation; the earlier 77.7-second join is a diagnostic baseline, not a measured post-change speed guarantee.
 
 ## Build and run
 

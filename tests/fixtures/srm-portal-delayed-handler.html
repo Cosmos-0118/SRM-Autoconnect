@@ -1,0 +1,7 @@
+<!doctype html><html><body>
+<form id="LoginUserPassword_auth_form"><input type="text" id="LoginUserPassword_auth_username"><input type="password" id="LoginUserPassword_auth_password"><input type="submit" style="display:none"></form>
+<a id="UserCheck_Login_Button">Log In</a><script>
+window.__clicked=[]; window.__earlyClicks=0; window.__handlerCalls=0;
+document.getElementById('UserCheck_Login_Button').addEventListener('click',function(){window.__clicked.push('A#UserCheck_Login_Button');if(!window.oAuthentication)window.__earlyClicks++;});
+setTimeout(function(){window.oAuthentication={submitActiveForm:function(){window.__handlerCalls++;window.__handlerCalled=true;window.__formSubmitted=true;}};document.getElementById('UserCheck_Login_Button').addEventListener('click',function(){window.oAuthentication.submitActiveForm();});},1500);
+</script></body></html>
