@@ -1,3 +1,5 @@
+param([switch]$NoLaunch, [switch]$NoStartup)
+
 # Configuration
 $AppName = "SRM Autoconnect"
 $ExeName = "SRMAutoconnect.exe"
@@ -20,18 +22,23 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-# Stop any running instance first (locks the binary otherwise), including a
-# copy launched from bin\Debug during development.
-Get-Process SRMAutoconnect -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 1
-
 if (Test-Path $BuildDir) {
-    Remove-Item $BuildDir -Recurse -Force
+    $ResolvedBuildDir = (Resolve-Path -LiteralPath $BuildDir).Path
+    $BuildRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "build")) + [IO.Path]::DirectorySeparatorChar
+    if (-not $ResolvedBuildDir.StartsWith($BuildRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean build output outside $BuildRoot"
+    }
+    Remove-Item -LiteralPath $ResolvedBuildDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
 
 Write-Host "Publishing $AppName ($Configuration)..."
-dotnet publish $Project -c $Configuration -o $BuildDir --nologo
+$Runtime = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
+    "Arm64" { "win-arm64" }
+    "X86" { "win-x86" }
+    default { "win-x64" }
+}
+dotnet publish $Project -c $Configuration -r $Runtime --self-contained true -o $BuildDir --nologo
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Compilation failed."
     exit 1
@@ -45,25 +52,22 @@ if (-not (Test-Path $BuiltExe)) {
 
 Write-Host "Build successful! Output at: $BuildDir"
 
+# Keep the current app running until its replacement has built successfully.
+Get-Process SRMAutoconnect -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
+
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-# Open at Login records whatever path was running when the toggle was enabled.
-# If it still points at a debug build, the installed copy will never start at logon.
-$RunValue = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "SRMAutoconnect" -ErrorAction SilentlyContinue).SRMAutoconnect
-if ($RunValue -and ($RunValue -notlike "*$InstallDir*")) {
-    Write-Host ""
-    Write-Host "NOTE: Open at Login still points at:"
-    Write-Host "      $RunValue"
-    Write-Host "      This script installs to $InstallDir."
-    Write-Host "      Turn the setting off and on again from the installed app."
-    Write-Host ""
-}
-
-# Remove the old installed copy first so a stale executable (or an older
-# WebView2 folder next to it) can never survive alongside the new one.
-Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+# Replace published files without recursively deleting an arbitrary INSTALL_DIR.
 Copy-Item (Join-Path $BuildDir "*") $InstallDir -Recurse -Force
 Write-Host "Installed to: $InstalledExe"
 
+if (-not $NoStartup) {
+    $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    New-Item -Path $RunKey -Force | Out-Null
+    New-ItemProperty -Path $RunKey -Name "SRMAutoconnect" -Value ('"' + $InstalledExe + '"') -PropertyType String -Force | Out-Null
+    Write-Host "Open at Login enabled for the installed app. Disable it in Settings if desired."
+}
+
 # Launch the installed copy, not the scratch build.
-Start-Process $InstalledExe
+if (-not $NoLaunch) { Start-Process -FilePath $InstalledExe -WindowStyle Hidden }

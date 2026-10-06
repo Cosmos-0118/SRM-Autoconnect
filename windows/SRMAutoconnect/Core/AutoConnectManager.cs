@@ -27,7 +27,6 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
 
     private const int PortalNavigationTimeoutSeconds = 18;
     private const int LoginFormTimeoutSeconds = 25;
-    private const int SubmitOutcomeTimeoutSeconds = 10;
     private const int AttemptHardTimeoutSeconds = 120;
 
     private static readonly string WebViewUserDataFolder = Path.Combine(
@@ -204,6 +203,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
     {
         RunOnDispatcher(() =>
         {
+            CancelCurrentAttempt("Credentials changed - cancelled login using the previous credentials.");
             retryScheduleGeneration++;
             NextAttemptAt = null;
             retryCount = 0;
@@ -355,6 +355,9 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
 
         portalNavigationCompletion = new TaskCompletionSource<NavigationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         scriptMessageCompletion = new TaskCompletionSource<ScriptMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Document-created scripts can submit before NavigationCompleted. Keep
+        // this task: the message handler replaces the field with the outcome task.
+        var initialScriptMessage = scriptMessageCompletion.Task;
 
         var navigation = await NavigateToPortalAsync(token, cancellationToken);
         EnsureLive(token);
@@ -370,7 +373,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         }
 
         attemptPhase = AttemptPhase.WaitingForLoginForm;
-        var scriptMessage = await WaitForScriptMessageAsync(cancellationToken);
+        var scriptMessage = await WaitForScriptMessageAsync(initialScriptMessage, cancellationToken);
         EnsureLive(token);
         await HandleScriptStageAsync(token, scriptMessage, cancellationToken);
     }
@@ -381,10 +384,8 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         {
             case "submitted":
                 attemptPhase = AttemptPhase.Verifying;
-                Logger.Shared.Debug($"Credentials submitted via '{scriptMessage.Detail}'. Waiting for portal response...");
-                var outcome = await WaitForSubmitOutcomeAsync(cancellationToken);
-                EnsureLive(token);
-                await HandleSubmitOutcomeAsync(token, outcome, cancellationToken);
+                Logger.Shared.Debug($"Credentials submitted via '{scriptMessage.Detail}'. Verifying internet access...");
+                await VerifyAsync(token, remaining: 8, cancellationToken);
                 break;
             case "already":
                 attemptPhase = AttemptPhase.Verifying;
@@ -399,31 +400,19 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             case "rejected":
                 throw new InvalidOperationException($"portal rejected: {scriptMessage.Detail}");
             case "noresponse":
-                throw new InvalidOperationException($"submit produced no response ({scriptMessage.Detail})");
+                attemptPhase = AttemptPhase.Verifying;
+                await VerifyAsync(token, remaining: 8, cancellationToken);
+                break;
+            case "handlerfailed":
+                throw new InvalidOperationException("portal authentication handler failed; no fallback submission attempted");
+            case "notready":
+                throw new InvalidOperationException("portal authentication handler never became ready");
             case "nofields":
                 throw new InvalidOperationException($"login form never appeared ({scriptMessage.Detail})");
             case "nosubmit":
                 throw new InvalidOperationException("no submit button on the login form");
             default:
                 throw new InvalidOperationException($"login script reported unexpected stage '{scriptMessage.Stage}'");
-        }
-    }
-
-    private async Task HandleSubmitOutcomeAsync(int token, ScriptMessage outcome, CancellationToken cancellationToken)
-    {
-        switch (outcome.Stage)
-        {
-            case "accepted":
-            case "already":
-                Logger.Shared.Debug($"Portal accepted login ({outcome.Detail}). Verifying...");
-                await VerifyAsync(token, remaining: 8, cancellationToken);
-                break;
-            case "rejected":
-                throw new InvalidOperationException($"portal rejected: {outcome.Detail}");
-            case "noresponse":
-                throw new InvalidOperationException($"submit produced no response ({outcome.Detail})");
-            default:
-                throw new InvalidOperationException($"submit produced no response ({outcome.Stage}: {outcome.Detail})");
         }
     }
 
@@ -481,7 +470,8 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             }
 
             Directory.CreateDirectory(WebViewUserDataFolder);
-            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: WebViewUserDataFolder);
+            var options = new CoreWebView2EnvironmentOptions("--disable-background-timer-throttling");
+            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: WebViewUserDataFolder, options: options);
             await webView.EnsureCoreWebView2Async(environment);
             ApplyPortalWindowDebugState();
 
@@ -526,41 +516,19 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         return await portalNavigationCompletion.Task;
     }
 
-    private async Task<ScriptMessage> WaitForScriptMessageAsync(CancellationToken cancellationToken)
+    private async Task<ScriptMessage> WaitForScriptMessageAsync(Task<ScriptMessage> initialMessage, CancellationToken cancellationToken)
     {
-        if (scriptMessageCompletion is null)
-        {
-            throw new InvalidOperationException("Login script is not waiting for a result.");
-        }
-
         var finished = await Task.WhenAny(
-            scriptMessageCompletion.Task,
+            initialMessage,
             Task.Delay(TimeSpan.FromSeconds(LoginFormTimeoutSeconds), cancellationToken));
 
-        if (finished != scriptMessageCompletion.Task)
+        if (finished != initialMessage)
         {
             cancellationToken.ThrowIfCancellationRequested();
             throw new InvalidOperationException($"login form did not become ready after {LoginFormTimeoutSeconds}s");
         }
 
-        return await scriptMessageCompletion.Task;
-    }
-
-    private async Task<ScriptMessage> WaitForSubmitOutcomeAsync(CancellationToken cancellationToken)
-    {
-        scriptMessageCompletion ??= new TaskCompletionSource<ScriptMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        var finished = await Task.WhenAny(
-            scriptMessageCompletion.Task,
-            Task.Delay(TimeSpan.FromSeconds(SubmitOutcomeTimeoutSeconds), cancellationToken));
-
-        if (finished != scriptMessageCompletion.Task)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return new ScriptMessage("noresponse", $"portal did not respond after {SubmitOutcomeTimeoutSeconds}s");
-        }
-
-        return await scriptMessageCompletion.Task;
+        return await initialMessage;
     }
 
     private async Task InjectLoginScriptAsync(int token, Credentials credentials, CancellationToken cancellationToken)
@@ -596,6 +564,13 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
         {
             EnsureLive(token);
             var reachability = await ReachabilityProbe.Shared.ProbeReachabilityAsync(cancellationToken);
+            EnsureLive(token);
+            if (scriptMessageCompletion?.Task is { IsCompletedSuccessfully: true } outcome
+                && outcome.Result.Stage == "rejected")
+            {
+                await FailAsync(token, "portal rejected the saved credentials");
+                return;
+            }
             if (reachability.Online)
             {
                 Succeed(token);
@@ -625,6 +600,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
 
         if (loginSubmittedForAttempt == currentAttempt)
         {
+            portalNavigationCompletion?.TrySetResult(new NavigationResult(true, "submitted during navigation", NetworkNotReady: false));
             Logger.Shared.Debug("Post-submit navigation; awaiting reachability verification.");
             scriptMessageCompletion?.TrySetResult(new ScriptMessage("accepted", "post-submit navigation"));
             return;
@@ -686,6 +662,10 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
     {
         try
         {
+            if (!Uri.TryCreate(e.Source, UriKind.Absolute, out var source) || !IsTrustedPortalUrl(source))
+            {
+                return;
+            }
             using var json = JsonDocument.Parse(e.WebMessageAsJson);
             var root = json.RootElement;
             var attempt = root.GetProperty("attempt").GetInt32();
@@ -707,6 +687,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
 
             if (stage is "submitted" or "already")
             {
+                if (loginSubmittedForAttempt == attempt) return;
                 loginSubmittedForAttempt = attempt;
                 RemoveInjectionScript();
             }
@@ -1089,6 +1070,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             var host = String((location && location.hostname) || '').toLowerCase();
             var protocol = String((location && location.protocol) || '').toLowerCase();
             if (protocol !== 'https:' || host !== 'iac.srmist.edu.in') return;
+            if (location.port && location.port !== '443') return;
             if (window.__srmInjectedAttempt === {{token}}) return;
             window.__srmInjectedAttempt = {{token}};
           } catch (e) { return; }
@@ -1156,17 +1138,23 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
           }
           function findPassword(root) {
             root = root || document;
-            var nodes = [];
-            try {
-              nodes = root.querySelectorAll('input[type="password"], input[name*="pass" i], input[id*="password" i], input[id*="LoginUserPassword_auth_password" i]');
-            } catch (e) {}
-            return firstVisible(nodes);
+            // "LoginUserPassword" is also in the USERNAME field's id. Never
+            // use a substring of the form prefix to identify the password.
+            var selectors = ['input[type="password"]',
+              'input#LoginUserPassword_auth_password',
+              'input[cpname="password"]', 'input[autocomplete="current-password"]'];
+            for (var i = 0; i < selectors.length; i++) {
+              var found = firstVisible(root.querySelectorAll(selectors[i]));
+              if (found) return found;
+            }
+            return null;
           }
           function isVisible(el) {
             if (!el) return false;
             try {
               var style = window.getComputedStyle(el);
-              return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+              return el.getClientRects().length > 0 && style.display !== 'none'
+                && style.visibility !== 'hidden' && style.opacity !== '0';
             } catch (e) { return true; }
           }
           function isClickable(el) {
@@ -1175,7 +1163,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             if (tag === 'button' || tag === 'a') return true;
             if (tag !== 'input') return false;
             var t = (el.type || '').toLowerCase();
-            return t === 'submit' || t === 'button' || t === 'image' || t === 'reset';
+            return t === 'submit' || t === 'button' || t === 'image';
           }
           function findSubmit(scope, ownerDoc) {
             var selectors = [
@@ -1209,7 +1197,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             var lower = t.toLowerCase();
             var hints = ['invalid', 'incorrect', 'denied', 'failed', 'wrong password', 'authentication unsuccessful', 'unable to authenticate', 'login error'];
             for (var i = 0; i < hints.length; i++) {
-              if (lower.indexOf(hints[i]) >= 0) return t.slice(0, 180);
+              if (lower.indexOf(hints[i]) >= 0) return 'portal rejected authentication';
             }
             return '';
           }
@@ -1272,7 +1260,7 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             var userNodes = [];
             for (var i = 0; i < inputs.length; i++) {
               var t = (inputs[i].type || 'text').toLowerCase();
-              if (t === 'text' || t === 'email' || t === 'tel') userNodes.push(inputs[i]);
+              if (inputs[i] !== pass && (t === 'text' || t === 'email' || t === 'tel')) userNodes.push(inputs[i]);
             }
             user = firstVisible(userNodes);
             if (!user) {
@@ -1283,10 +1271,15 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
             var win = (ownerDoc && ownerDoc.defaultView) || window;
             var handler = portalHandler(win) || portalHandler(window);
             var btn = findSubmit(scope, ownerDoc);
-            if (!rsaReady() || (!handler && !btn)) {
+            var isSrmForm = !!ownerDoc.getElementById('LoginUserPassword_auth_form')
+              || pass.id === 'LoginUserPassword_auth_password'
+              || !!ownerDoc.querySelector('[onclick*="submitActiveForm"]');
+            // SRM's handler owns RSA initialization. Generic forms do not have
+            // cpRSAobj; requiring it here prevented them from ever submitting.
+            if ((isSrmForm && !handler) || (!isSrmForm && !handler && !btn && !pass.form)) {
               if (attempts > 100) {
                 clearInterval(timer);
-                if (!rsaReady()) report('nofields', 'cpRSAobj never became ready (' + describePage() + ')');
+                if (isSrmForm && !handler) report('notready', 'authentication handler unavailable');
                 else report('nosubmit', 'no submit control found');
               }
               return;
@@ -1319,14 +1312,15 @@ public sealed class AutoConnectManager : INotifyPropertyChanged, IDisposable
               handler = portalHandler(win) || portalHandler(window) || handler;
               var submitDetail = '';
               if (handler) {
-                try { handler(); } catch (e) {}
+                try { handler(); } catch (e) { report('handlerfailed', 'authentication handler threw'); return; }
                 submitDetail = 'oAuthentication.submitActiveForm';
                 report('submitted', submitDetail);
                 watchOutcome(submitDetail);
                 return;
               }
+              if (isSrmForm) { report('notready', 'authentication handler unavailable'); return; }
               if (btn) {
-                try { btn.click(); } catch (e) {}
+                try { btn.click(); } catch (e) { report('handlerfailed', 'submit control threw'); return; }
                 submitDetail = (btn.tagName || '') + '#' + (btn.id || '') + '.' + (btn.type || '');
                 report('submitted', submitDetail);
                 watchOutcome(submitDetail);

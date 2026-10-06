@@ -33,7 +33,11 @@ checks = {
         and "if (scope !== document) roots.push(document)" not in js
     ),
     "readyState gate": "document.readyState !== 'complete'" in js,
-    "requires cpRSAobj": "function rsaReady()" in js and "if (!rsaReady()" in js,
+    "generic forms do not require cpRSAobj": "if (!rsaReady()" not in js,
+    "SRM forms wait for authentication handler": "isSrmForm && !handler" in js,
+    "password does not match shared form prefix": 'input[id*="password" i]' not in find_password,
+    "trusted default HTTPS port": "location.port !== '443'" in js,
+    "throwing handler reports failure": "report('handlerfailed'" in js,
     "stable two ticks": "if (readyTicks < 2) return;" in js,
     "discover log": "report('discover'" in js,
     "accepted outcome": "report('accepted'" in js,

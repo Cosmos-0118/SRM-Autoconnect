@@ -82,7 +82,7 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
 
     public bool IsReadyForAutomaticLogin => IsConnectedToSRM && latestSsidReadWasUsable && IsNetworkAvailable;
 
-    private TimeSpan ReachabilityMinInterval => lastProbeWasOnline ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(10);
+    private TimeSpan ReachabilityMinInterval => lastProbeWasOnline ? TimeSpan.FromSeconds(15) : TimeSpan.FromSeconds(10);
 
     private NetworkMonitor()
     {
@@ -279,6 +279,13 @@ public sealed class NetworkMonitor : INotifyPropertyChanged, IDisposable
         }
 
         consecutiveOfflineProbes++;
+        if (reachability.CaptivePortal)
+        {
+            ResetOfflineConfirmation();
+            Logger.Shared.Log($"Captive portal detected ({reachability.Detail}). Logging in...");
+            AutoConnectManager.Shared.AttemptLoginAfterConfirmedOutage(reachability);
+            return;
+        }
         if (consecutiveOfflineProbes == 1)
         {
             Logger.Shared.Log($"No internet on SRMIST ({reachability.Detail}). Confirming before portal login.");

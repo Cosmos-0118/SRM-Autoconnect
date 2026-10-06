@@ -1,0 +1,11 @@
+<!doctype html><html><body>
+<form id="LoginUserPassword_auth_form">
+  <input type="text" id="LoginUserPassword_auth_username">
+  <input type="password" id="LoginUserPassword_auth_password">
+</form>
+<div id="LoginSequencePage_Content"></div>
+<script>
+window.oAuthentication = { submitActiveForm: function() {
+  document.getElementById('LoginSequencePage_Content').innerText = 'Invalid password fixture-password';
+} };
+</script></body></html>

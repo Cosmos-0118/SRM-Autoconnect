@@ -1,8 +1,28 @@
 # SRM Autoconnect
 
-SRM Autoconnect is a macOS menu-bar app for the SRMIST Wi-Fi captive portal. When it detects the Wi-Fi network named `SRMIST`, it checks whether the internet is genuinely reachable. If not, it opens the SRM portal in an invisible WebKit view, submits the saved SRM credentials, and verifies that the connection is usable before reporting success.
+SRM Autoconnect is a macOS menu-bar and Windows system-tray app for the SRMIST Wi-Fi captive portal. When it detects an SRMIST Wi-Fi network, it checks internet reachability, submits saved SRM credentials through the portal, and verifies internet access before reporting success.
 
 The app has no Dock icon and no main window. Click the Wi-Fi icon in the menu bar to open its dashboard, logs, and settings.
+
+## Windows setup and automatic connection
+
+Requires Windows 10 or later and the Microsoft Edge WebView2 Runtime. Building requires the .NET 8 SDK; the installed Windows build includes the .NET runtime.
+
+Run `build.cmd` (or `powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1`). It builds, installs to `%LOCALAPPDATA%\Programs\SRM Autoconnect`, enables **Open at Login** for that installed executable, and launches the tray app. Rebuilding updates the startup entry automatically. Use `-NoStartup` to skip changing startup registration or `-NoLaunch` to skip launching.
+
+1. Open the tray icon, select **Settings**, and save your SRM ID and password once. Credentials stay in Windows Credential Manager.
+2. Join the campus SRMIST Wi-Fi network and enable Windows' **Connect automatically** option for that Wi-Fi profile. Windows handles Wi-Fi association; this app handles captive-portal authentication.
+3. On Windows versions that restrict Wi-Fi name access, enable **Location services** and access for desktop apps under **Settings > Privacy & security > Location**. The app must be able to read the SSID to trigger automatic login.
+
+The app polls Wi-Fi every five seconds, checks an online session every 15 seconds, and rechecks after resume or network changes. A detected captive portal starts login immediately; ambiguous outages require a second check. Failed logins retry automatically with bounded backoff. Keep the app running in the tray; **Open at Login** can be disabled in Settings.
+
+Windows uses an off-screen WebView2 browser. The login script selects the actual password field, waits for SRM's authentication handler, and calls its encryption/AJAX flow. Internet verification starts after submission even if the page does not navigate or show a success message. Reporting “Connected” still requires external reachability checks. Only one tray instance can run in a Windows session.
+
+Windows logs are at `%LOCALAPPDATA%\SRMAutoconnect\SRMAutoconnect.log`; **Reveal Log File** opens their location.
+
+Run `powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-windows-regression.ps1` in a normal Windows desktop session. It exercises the production login manager in real WebView2 against local fixtures with fake credentials and controlled reachability. It covers separate username/password fields, generic forms, delayed/missing/throwing handlers, submission before navigation completes, rejected credentials, lack of internet after submission, and cancellation when network readiness is lost. It does not contact the campus portal or read saved credentials. Optional static checks: `py tests\check-windows-injection.py`.
+
+Live joins, wake recovery, and session expiry on campus remain necessary to validate SRM's current portal and network behavior.
 
 ## What the app actually monitors
 

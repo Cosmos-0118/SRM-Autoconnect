@@ -14,10 +14,20 @@ public partial class App : Application
 {
     private TaskbarIcon? trayIcon;
     private MainPopup? popup;
+    private Mutex? instanceMutex;
+    private bool ownsInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Two tray instances share a browser profile and can race portal login.
+        instanceMutex = new Mutex(true, @"Local\SRMAutoconnect", out ownsInstanceMutex);
+        if (!ownsInstanceMutex)
+        {
+            Shutdown();
+            return;
+        }
 
         Logger.Shared.Log("Windows UI shell ready.");
         Logger.Shared.Debug($"Log file: {Logger.Shared.LogFilePath}");
@@ -38,11 +48,19 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (!ownsInstanceMutex)
+        {
+            instanceMutex?.Dispose();
+            base.OnExit(e);
+            return;
+        }
         trayIcon?.Dispose();
         NetworkMonitor.Shared.Dispose();
         AutoConnectManager.Shared.Dispose();
         ReachabilityProbe.Shared.Dispose();
         Logger.Shared.Dispose();
+        instanceMutex?.ReleaseMutex();
+        instanceMutex?.Dispose();
         base.OnExit(e);
     }
 
