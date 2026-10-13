@@ -77,7 +77,10 @@ final class PortalWindowHarness: NSObject, NSApplicationDelegate {
                         try? data.write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
                     }
                 }
-                ReachabilityProbe.pending.removeFirst()(.init(online: true, captivePortal: false, detail: "test quorum"))
+                let cookie = HTTPCookie(properties: [.domain: "iac.srmist.edu.in", .path: "/", .name: "old-session", .value: "test-only"] )!
+                self.manager.portalBrowserForTest.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                    ReachabilityProbe.pending.removeFirst()(.init(online: true, captivePortal: false, detail: "test quorum"))
+                }
             }
         case 1:
             guard !manager.isConnecting else { return }
@@ -85,6 +88,9 @@ final class PortalWindowHarness: NSObject, NSApplicationDelegate {
             stage = 2
             manager.attemptLogin(afterConfirmedOutage: offline)
             check("later login reopens portal window", manager.portalWindowForTest.isVisible)
+            manager.portalBrowserForTest.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                self.check("new attempt discards stale portal cookies", !cookies.contains { $0.name == "old-session" })
+            }
             let failures = manager.totalFailures
             manager.portalWindowForTest.performClose(nil)
             check("closing window cancels attempt without failure", !manager.isConnecting && !manager.portalWindowForTest.isVisible && manager.totalFailures == failures)
@@ -118,8 +124,20 @@ final class PortalWindowHarness: NSObject, NSApplicationDelegate {
             check("post-submit redirect retains verification", manager.isConnecting && ReachabilityProbe.pending.count == 1)
             ReachabilityProbe.pending.removeFirst()(.init(online: true, captivePortal: false, detail: "test quorum"))
             check("post-submit verification closes window", !manager.isConnecting && !manager.portalWindowForTest.isVisible)
-            print("ALL PASS: \(checks) portal window checks")
-            exit(0)
+            try! FileManager.default.removeItem(atPath: fixtureDir + "/portal.html")
+            try! FileManager.default.copyItem(atPath: fixtureDir + "/granted.html", toPath: fixtureDir + "/portal.html")
+            manager.attemptLogin(afterConfirmedOutage: offline)
+            stage = 5
+        case 5:
+            guard !ReachabilityProbe.pending.isEmpty else { return }
+            check("access-granted page enters connectivity verification", manager.portalStatus.contains("connected"))
+            ReachabilityProbe.pending.removeFirst()(offline)
+            if !manager.isConnecting {
+                check("accepted session without internet closes window", !manager.portalWindowForTest.isVisible && manager.lastResult == .failure)
+                check("accepted session failure does not blame credentials", manager.lastFailureReason?.contains("access") == true && manager.lastFailureReason?.contains("credentials") == false)
+                print("ALL PASS: \(checks) portal window checks")
+                exit(0)
+            }
         default: break
         }
     }

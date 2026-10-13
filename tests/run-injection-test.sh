@@ -26,6 +26,8 @@ m = re.search(r'let js = """\n(.*?)\n        """', src, re.S)
 if not m:
     sys.exit("Could not find the injected script literal. Did injectLogin() change shape?")
 js = m.group(1)
+# Collapse Swift's escaped backslashes to match the string WebKit receives.
+js = js.replace(chr(92) * 2, chr(92))
 # Stand in for the Swift string interpolations.
 js = js.replace('\\(token)', '1')
 js = js.replace('\\(jsLiteral(creds.username))', '"AN1234"')
@@ -47,5 +49,5 @@ run_fixture() {
 if [ "$#" -gt 0 ]; then
   for fixture in "$@"; do run_fixture "$fixture"; done
 else
-  for fixture in portal-jsbutton srm-portal srm-portal-delayed-form srm-portal-delayed-handler srm-portal-missing-handler srm-portal-throwing-handler; do run_fixture "$fixture"; done
+  for fixture in portal-jsbutton srm-portal srm-portal-delayed-form srm-portal-delayed-handler srm-portal-missing-handler srm-portal-throwing-handler srm-portal-access-granted srm-portal-access-granted-stale-form; do run_fixture "$fixture"; done
 fi

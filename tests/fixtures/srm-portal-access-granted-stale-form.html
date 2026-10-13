@@ -1,0 +1,12 @@
+<!doctype html><html><body>
+<h1>Network Access Granted</h1><button>Log Out</button>
+<!-- Some gateways retain the previous form after switching to the final view. -->
+<form id="LoginUserPassword_auth_form" hidden>
+  <input type="text"><input type="password">
+</form>
+<script>
+window.__clicked = []; window.__expectedStage = 'already'; window.__handlerCalls = 0;
+window.oAuthentication = {submitActiveForm: function() {
+  window.__handlerCalls++; window.__formSubmitted = true;
+}};
+</script></body></html>

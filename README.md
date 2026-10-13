@@ -53,6 +53,8 @@ When the probes show that the internet is unavailable, the app:
 
 An attempt has phase-specific watchdogs: portal navigation is stopped after 18 seconds, the dynamically rendered login form is given 25 seconds, and a 120-second final watchdog covers unexpected WebKit/JavaScript stalls without interrupting the bounded reachability-verification loop. A failed attempt retries after approximately 3, 8, 20, and 45 seconds (with a small random delay). After those retries are exhausted, the next automatic attempt is delayed for 1, 3, 5, then 10 minutes. Leaving `SRMIST` cancels an in-progress login and discards pending retries.
 
+Each macOS portal attempt starts with a fresh private browser session, so old cookies, cache and local storage cannot carry over into a retry. Saved Keychain credentials are preserved. SRM's “Network Access Granted” / “Log Out” page starts internet verification immediately, including when the previous form remains hidden on the page. Portal access alone is not counted as internet connectivity: if the checks still fail, the window closes and the dashboard explains that SRM granted access but internet remains unavailable.
+
 **Force Connect** clears the current retry backoff and starts an attempt immediately. It may be used even when the current SSID is not `SRMIST`; the app still performs its normal internet check before loading the portal.
 
 Closing the sign-in window cancels the current attempt without counting a login failure and pauses automatic login for 60 seconds. **Force Connect** can restart it immediately. Previously filled fields are hidden when an attempt ends and while the next page loads.

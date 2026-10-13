@@ -19,6 +19,7 @@ final class Subject {
     var isConnecting = true
     var attemptPhase: AttemptPhase = .waitingForLoginForm
     var loginSubmittedForAttempt = -1
+    var portalReportedExistingSession = false
     var navigationAttempts: [ObjectIdentifier: Int] = [:]
     var activePortalNavigation: ObjectIdentifier?
     var webView = StubWebView()
@@ -95,6 +96,17 @@ final class Subject {
             let s = Subject(); s.armFormWatchdog(); s.cancel()
             RunLoop.main.run(until: Date().addingTimeInterval(0.1))
             check("cancelled form watchdog cannot fail new attempt", s.failures.isEmpty)
+        }
+        do {
+            let s = Subject(); s.send("already")
+            let captive = ReachabilityProbe.Result(online: false, captivePortal: true, detail: "intercepting")
+            for index in 0..<3 {
+                s.probes.last?(captive)
+                if index < 2 { RunLoop.main.run(until: Date().addingTimeInterval(3.1)) }
+            }
+            check("accepted session without internet resolves with network explanation",
+                  !s.isConnecting && s.successes == 0 && s.failures.count == 1
+                  && s.failures[0].contains("access") && !s.failures[0].contains("credentials"))
         }
         do {
             let s = Subject(); s.send("submitted")

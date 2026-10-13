@@ -112,6 +112,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private var activePortalNavigation: ObjectIdentifier?
     private var injectedNavigation: ObjectIdentifier?
     private var loginSubmittedForAttempt = -1
+    private var portalReportedExistingSession = false
     /// Per-candidate errors for the attempt in progress, so a final "portal
     /// unreachable" line retains its real cause rather than just its last error.
     private var portalFailures: [String] = []
@@ -125,17 +126,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
 
         super.init()
 
-        let config = WKWebViewConfiguration()
-        // The injected script reports its own outcome instead of us guessing after a
-        // fixed sleep, so "the form never appeared" and "we submitted and are waiting"
-        // are distinguishable failures.
-        config.userContentController.add(self, name: "srm")
-
         // Offscreen hosting allows navigation but WebKit can suspend the page's
         // timers before its dynamic form/authentication scripts become ready.
         // Keep the real portal visible for the duration of an attempt.
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 456, height: 420), configuration: config)
-        webView.navigationDelegate = self
+        webView = makePortalBrowser()
 
         hostWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 620),
@@ -155,6 +149,18 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         hostWindow.center()
 
         Logger.shared.debug("Log file: \(Logger.shared.logFilePath)")
+    }
+
+    private func makePortalBrowser() -> WKWebView {
+        let config = WKWebViewConfiguration()
+        // A new, ephemeral store for every attempt isolates cookies, cache and
+        // local storage from failed attempts and previous app launches.
+        config.websiteDataStore = .nonPersistent()
+        config.userContentController.add(self, name: "srm")
+        let browser = WKWebView(frame: NSRect(x: 0, y: 0, width: 456, height: 420), configuration: config)
+        browser.navigationDelegate = self
+        browser.isHidden = true
+        return browser
     }
 
     // MARK: - Entry point
@@ -248,6 +254,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         activePortalNavigation = nil
         injectedNavigation = nil
         loginSubmittedForAttempt = -1
+        portalReportedExistingSession = false
         portalFailures = []
         sawNetworkNotReadyInAttempt = false
         currentAttemptWasForced = force
@@ -255,6 +262,9 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         phaseStartedAt = attemptStartedAt
         Logger.shared.debug("Attempt \(token) trigger=\(force ? "force" : (knownReachability == nil ? "preflight/retry" : "confirmed-outage")) started")
         transition(to: .preflight)
+        resultClearWorkItem?.cancel()
+        lastResult = nil
+        lastFailureReason = nil
         isConnecting = true
         nextAttemptAt = nil
 
@@ -316,6 +326,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         Logger.shared.debug("Loading portal candidate \(portalIndex + 1)/\(portalCandidates.count): \(url.absoluteString)")
         transition(to: .loadingPortal)
         webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "srm")
+        webView = makePortalBrowser()
+        hostWindow.contentView = NSHostingView(rootView: PortalLoginView(manager: self, webView: webView))
         // Hide the old document until the new navigation commits so previously
         // filled credential fields cannot flash when a retry reuses the window.
         webView.isHidden = true
@@ -559,15 +573,28 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }
           function looksLoggedIn() {
-            var t = (document.body ? document.body.innerText : '').toLowerCase();
-            return t.indexOf('logout') >= 0 || t.indexOf('sign out') >= 0 || t.indexOf('you are signed in') >= 0;
+            function normalized(text) { return String(text || '').toLowerCase().replace(/\\s+/g, ' ').trim(); }
+            // Instructional text can mention logging out before the form loads.
+            // Only a granted-access heading or a real logout control is evidence
+            // of an accepted session; internet still needs independent checks.
+            var headings = document.querySelectorAll('h1, h2, h3, [role="heading"], #usercheck_title_div');
+            for (var i = 0; i < headings.length; i++) {
+              if (isVisible(headings[i]) && /^(network access granted|you are signed in)[.!]?$/.test(normalized(headings[i].innerText))) return true;
+            }
+            var controls = document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]');
+            for (var j = 0; j < controls.length; j++) {
+              var control = controls[j];
+              var label = normalized(control.getAttribute('aria-label') || control.innerText || control.value);
+              if (isClickable(control) && /^(log ?out|sign ?out)$/.test(label)) return true;
+            }
+            return false;
           }
 
           function isVisible(el) {
             if (!el) return false;
             try {
               var style = window.getComputedStyle(el);
-              return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+              return el.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
             } catch (e) { return true; }
           }
 
@@ -613,9 +640,11 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
           var reportedWaiting = false;
           var timer = setInterval(function() {
             var expired = Date.now() - started >= 24000;
+            // A final view can keep a hidden old form in the DOM. Check the
+            // accepted session first so it never receives another submission.
             var pass = document.querySelector('input[type="password"]');
+            if (looksLoggedIn() && (!pass || !isVisible(pass))) { clearInterval(timer); report('already', 'portal session accepted'); return; }
             if (!pass) {
-              if (looksLoggedIn()) { clearInterval(timer); report('already', document.title); return; }
               if (expired) { clearInterval(timer); report('nofields', 'no password field after 24s'); }
               return;
             }
@@ -720,6 +749,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         case "already":
             guard loginSubmittedForAttempt != token else { return }
             loginSubmittedForAttempt = token
+            portalReportedExistingSession = true
             transition(to: .verifying)
             Logger.shared.debug("Portal reports an existing session. Verifying...")
             verify(token, remaining: 3)
@@ -752,7 +782,9 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             } else if remaining > 1 {
                 self.after(3, token) { self.verify(token, remaining: remaining - 1) }
             } else {
-                self.fail(token, state.captivePortal
+                self.fail(token, self.portalReportedExistingSession
+                    ? "SRM granted access, but internet is still unavailable — check the network or VPN (\(state.detail))"
+                    : state.captivePortal
                     ? "portal still intercepting — credentials likely rejected (\(state.detail))"
                     : "no internet after login (\(state.detail))")
             }
@@ -982,6 +1014,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // under two labels that read as a matched pair, both parked near zero.
         totalFailures += 1
         lastFailureReason = reason
+        showResult(.failure)
 
         if sawNetworkNotReadyInAttempt && networkNotReadyRetries < networkNotReadyDelays.count {
             let delay = networkNotReadyDelays[networkNotReadyRetries] + Double.random(in: 0...0.5)
