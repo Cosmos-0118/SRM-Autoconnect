@@ -47,5 +47,5 @@ run_fixture() {
 if [ "$#" -gt 0 ]; then
   for fixture in "$@"; do run_fixture "$fixture"; done
 else
-  for fixture in portal-jsbutton srm-portal srm-portal-delayed-handler srm-portal-missing-handler srm-portal-throwing-handler; do run_fixture "$fixture"; done
+  for fixture in portal-jsbutton srm-portal srm-portal-delayed-form srm-portal-delayed-handler srm-portal-missing-handler srm-portal-throwing-handler; do run_fixture "$fixture"; done
 fi

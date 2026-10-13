@@ -2,8 +2,9 @@ import Foundation
 import WebKit
 import Combine
 import AppKit
+import SwiftUI
 
-final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate, WKScriptMessageHandler {
+final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate, WKScriptMessageHandler, NSWindowDelegate {
     static let shared = AutoConnectManager()
 
     @Published var totalSuccesses: Int {
@@ -16,6 +17,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         didSet { UserDefaults.standard.set(lastConnectedTime, forKey: "lastConnectedTime") }
     }
     @Published var isConnecting: Bool = false
+    @Published private(set) var portalStatus = "Opening secure sign in…"
 
     /// When the next automatic attempt is allowed. Surfaced in the dashboard so a
     /// deliberate backoff doesn't look like the app has silently stopped working.
@@ -129,21 +131,28 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // are distinguishable failures.
         config.userContentController.add(self, name: "srm")
 
-        // A WKWebView with no window ever attached silently stalls navigation on
-        // macOS — it never calls back (no didFinish, no didFail). Hosting it in a
-        // real (offscreen, invisible) window fixes that.
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1, height: 1), configuration: config)
+        // Offscreen hosting allows navigation but WebKit can suspend the page's
+        // timers before its dynamic form/authentication scripts become ready.
+        // Keep the real portal visible for the duration of an attempt.
+        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 456, height: 420), configuration: config)
         webView.navigationDelegate = self
 
         hostWindow = NSWindow(
-            contentRect: NSRect(x: -10000, y: -10000, width: 1, height: 1),
-            styleMask: [.borderless],
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 620),
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         hostWindow.isReleasedWhenClosed = false
-        hostWindow.contentView = webView
-        hostWindow.orderBack(nil)
+        hostWindow.title = "SRM Autoconnect"
+        hostWindow.titleVisibility = .hidden
+        hostWindow.titlebarAppearsTransparent = true
+        hostWindow.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1)
+        hostWindow.appearance = NSAppearance(named: .darkAqua)
+        hostWindow.isMovableByWindowBackground = true
+        hostWindow.delegate = self
+        hostWindow.contentView = NSHostingView(rootView: PortalLoginView(manager: self, webView: webView))
+        hostWindow.center()
 
         Logger.shared.debug("Log file: \(Logger.shared.logFilePath)")
     }
@@ -307,6 +316,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         Logger.shared.debug("Loading portal candidate \(portalIndex + 1)/\(portalCandidates.count): \(url.absoluteString)")
         transition(to: .loadingPortal)
         webView.stopLoading()
+        // Hide the old document until the new navigation commits so previously
+        // filled credential fields cannot flash when a retry reuses the window.
+        webView.isHidden = true
+        hostWindow.orderFront(nil)
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 15
@@ -359,6 +372,14 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         }
     }
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard isLive(currentAttempt), belongsToLiveAttempt(navigation, token: currentAttempt) else { return }
+        // The window identifies this as SRM's secure sign in. Never present a
+        // redirected off-host/HTTP document under that identity, even after
+        // submission while independent connectivity verification is running.
+        webView.isHidden = !isTrustedPortalURL(webView.url)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let token = currentAttempt
         guard isLive(token), belongsToLiveAttempt(navigation, token: token) else {
@@ -394,6 +415,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard isConnecting else { return }
+        webView.isHidden = true
         // This covers same-attempt JavaScript/meta redirects, whose WKNavigation
         // differs from the explicit `webView.load` navigation.
         let navigationID = ObjectIdentifier(navigation)
@@ -763,6 +785,14 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             Logger.shared.debug("Attempt \(currentAttempt) phase=\(attemptPhase) elapsed=\(String(format: "%.3f", now - phaseStartedAt))s total=\(String(format: "%.3f", now - attemptStartedAt))s")
         }
         attemptPhase = phase
+        switch phase {
+        case .idle: portalStatus = "Sign in finished"
+        case .preflight: portalStatus = "Checking your connection…"
+        case .loadingPortal: portalStatus = "Opening secure sign in…"
+        case .waitingForLoginForm: portalStatus = "Getting your sign in ready…"
+        case .waitingForPortalHandler: portalStatus = "Preparing secure sign in…"
+        case .verifying: portalStatus = "Checking that you're connected…"
+        }
         phaseStartedAt = now
         if phase != .idle { Logger.shared.debug("Attempt \(currentAttempt) phase=\(phase) started") }
     }
@@ -790,6 +820,19 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         navigationAttempts.removeAll(keepingCapacity: true)
         activePortalNavigation = nil
         webView.stopLoading()
+        webView.isHidden = true
+        hostWindow.orderOut(nil)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === hostWindow else { return true }
+        if isConnecting { finish(currentAttempt) }
+        // Dismissal is a cancellation, not an authentication failure. Invalidate
+        // queued retries and let Force Connect override the brief pause.
+        retryScheduleGeneration &+= 1
+        nextAttemptAt = Date().addingTimeInterval(60)
+        Logger.shared.log("Sign-in window closed — automatic login paused for 60s.")
+        return true
     }
 
     /// Called by NetworkMonitor after a confirmed transition away from SRMIST.

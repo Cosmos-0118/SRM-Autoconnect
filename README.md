@@ -2,7 +2,7 @@
 
 SRM Autoconnect is a macOS menu-bar and Windows system-tray app for the SRMIST Wi-Fi captive portal. When it detects an SRMIST Wi-Fi network, it checks internet reachability, submits saved SRM credentials through the portal, and verifies internet access before reporting success.
 
-The app has no Dock icon and no main window. Click the Wi-Fi icon in the menu bar to open its dashboard, logs, and settings.
+On macOS, the app has no Dock icon. Click the Wi-Fi icon in the menu bar to open its dashboard, logs, and settings. Its small sign-in window appears only during portal login and closes when the attempt ends.
 
 ## Windows setup and automatic connection
 
@@ -44,7 +44,7 @@ An explicit interception with insufficient ordinary-host reachability can trigge
 
 When the probes show that the internet is unavailable, the app:
 
-1. Loads `https://iac.srmist.edu.in/Connect/PortalMain` in an off-screen `WKWebView`.
+1. Loads `https://iac.srmist.edu.in/Connect/PortalMain` in a visible `WKWebView` inside a compact sign-in window. Visible hosting avoids the hidden-page timer suspension that can stall SRM's dynamic form and authentication initialization. The window has a soft animated glow and honors macOS Reduce Motion.
 2. Refuses to inject credentials unless the loaded page remains HTTPS on `iac.srmist.edu.in` and uses the default HTTPS port.
 3. Finds the password field and a text, email, or telephone username field in the same form.
 4. Sets both fields and dispatches `input` and `change` events so portal pages with framework-managed form state receive the update.
@@ -54,6 +54,8 @@ When the probes show that the internet is unavailable, the app:
 An attempt has phase-specific watchdogs: portal navigation is stopped after 18 seconds, the dynamically rendered login form is given 25 seconds, and a 120-second final watchdog covers unexpected WebKit/JavaScript stalls without interrupting the bounded reachability-verification loop. A failed attempt retries after approximately 3, 8, 20, and 45 seconds (with a small random delay). After those retries are exhausted, the next automatic attempt is delayed for 1, 3, 5, then 10 minutes. Leaving `SRMIST` cancels an in-progress login and discards pending retries.
 
 **Force Connect** clears the current retry backoff and starts an attempt immediately. It may be used even when the current SSID is not `SRMIST`; the app still performs its normal internet check before loading the portal.
+
+Closing the sign-in window cancels the current attempt without counting a login failure and pauses automatic login for 60 seconds. **Force Connect** can restart it immediately. Previously filled fields are hidden when an attempt ends and while the next page loads.
 
 ## Credentials, notifications, and logs
 
@@ -71,7 +73,9 @@ The file rotates at roughly 1 MB, keeping one previous file as `SRMAutoconnect.l
 
 ## Mac regression checks
 
-Run `bash tests/run-injection-test.sh` in a normal Mac GUI session; it opens local fixture windows and uses fake credentials only. The fixtures cover generic submission, SRM submission, delayed/missing authentication initialization, and a throwing authentication handler. The harness fails if inspection returns no valid JSON or exceeds its deadline.
+Run `bash tests/run-injection-test.sh` in a normal Mac GUI session; it opens local fixture windows and uses fake credentials only. The fixtures cover generic submission, SRM submission, delayed form rendering, delayed/missing authentication initialization, and a throwing authentication handler. The harness fails if inspection returns no valid JSON or exceeds its deadline.
+
+Run `bash tests/run-portal-window-test.sh` for the production manager's real window/navigation/injection lifecycle with local HTML, fake credentials, controlled reachability and isolated defaults. It verifies readable on-screen hosting, delayed form/handler readiness, closing after success/failure, dismissal cancellation, retry suppression and Force Connect recovery. An optional output path saves a preview of the window.
 
 Run `bash tests/run-reachability-test.sh`, `bash tests/run-connection-detection-test.sh`, and `bash tests/run-verification-test.sh` for controlled URLSession responses, real monitor decisions with injected system observations, and production verification/token logic extracted into a local harness. No campus login or Keychain access occurs in these tests.
 

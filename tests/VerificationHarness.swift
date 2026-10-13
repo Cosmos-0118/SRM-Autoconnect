@@ -10,7 +10,8 @@ final class Logger {
 }
 final class WKUserContentController {}
 final class WKScriptMessage { let body: Any; init(_ body: Any) { self.body = body } }
-final class StubWebView { func stopLoading() {} }
+final class StubWebView { var isHidden = false; func stopLoading() {} }
+final class StubWindow { func orderOut(_ sender: Any?) {} }
 final class Subject {
     typealias Reachability = ReachabilityProbe.Result
     enum AttemptPhase { case idle, preflight, loadingPortal, waitingForLoginForm, waitingForPortalHandler, verifying }
@@ -21,6 +22,8 @@ final class Subject {
     var navigationAttempts: [ObjectIdentifier: Int] = [:]
     var activePortalNavigation: ObjectIdentifier?
     var webView = StubWebView()
+    var hostWindow = StubWindow()
+    var portalStatus = ""
     var probes: [(Reachability) -> Void] = []
     var successes = 0
     var failures: [String] = []
