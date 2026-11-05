@@ -105,6 +105,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _, _, _ in self?.updateStatusIcon() }
         .store(in: &cancellables)
+        NetworkMonitor.shared.$internetReachable
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateStatusIcon() }
+            .store(in: &cancellables)
     }
 
     private func updateStatusIcon() {
@@ -118,8 +122,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             symbol = "wifi.exclamationmark"
             description = "SRM Autoconnect — login failed"
         } else if NetworkMonitor.shared.isConnectedToSRM {
-            symbol = "wifi"
-            description = "SRM Autoconnect — on SRMIST"
+            switch NetworkMonitor.shared.internetReachable {
+            case .some(true):
+                symbol = "wifi"
+                description = "SRM Autoconnect — online"
+            case .some(false):
+                symbol = "wifi.exclamationmark"
+                description = "SRM Autoconnect — on SRMIST, no internet"
+            case .none:
+                symbol = "wifi"
+                description = "SRM Autoconnect — on SRMIST, checking internet"
+            }
         } else {
             symbol = "wifi.slash"
             description = "SRM Autoconnect — not on SRMIST"

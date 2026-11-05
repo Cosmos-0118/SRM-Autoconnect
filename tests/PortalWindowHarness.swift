@@ -25,6 +25,7 @@ final class NetworkMonitor {
     var currentSSID = "SRMIST"
     var isReadyForAutomaticLogin = true
     var isConnectedToSRM = true
+    func noteInternetReachable(_ reachable: Bool) {}
     static func isSRMNetwork(_ ssid: String) -> Bool { ssid == "SRMIST" }
 }
 final class NotificationManager {

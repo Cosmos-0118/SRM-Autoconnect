@@ -68,7 +68,10 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     /// ready after that, it falls through to the normal ladder below.
     private var sawNetworkNotReadyInAttempt = false
     private var networkNotReadyRetries = 0
-    private let networkNotReadyDelays: [Double] = [1, 2, 3]
+    /// Sized from real logs: bring-up after wake/join took ~20s to ~2 minutes.
+    /// Each rung probes first and exits as "already online" the moment the
+    /// network returns, so a long ladder costs nothing when it recovers fast.
+    private let networkNotReadyDelays: [Double] = [2, 3, 5, 8, 10, 15, 20, 30]
     /// After a whole retry chain is exhausted, back off hard. Previously the 15s
     /// reachability poll restarted the chain immediately, so a portal that was
     /// genuinely down got hammered continuously.
@@ -296,6 +299,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         guard isLive(token) else { return }
 
         if state.online {
+            NetworkMonitor.shared.noteInternetReachable(true)
             Logger.shared.debug("Internet already reachable — no portal login needed.")
             finish(token)
             retryCount = 0
@@ -333,7 +337,11 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // Hide the old document until the new navigation commits so previously
         // filled credential fields cannot flash when a retry reuses the window.
         webView.isHidden = true
-        hostWindow.orderFront(nil)
+        // Settle retries (network still coming up) can die within ~0.2s, so
+        // showing the window for each one flashed it repeatedly. They reveal it
+        // in didCommit instead, once the portal actually responds. A first
+        // attempt still shows it immediately.
+        if networkNotReadyRetries == 0 { hostWindow.orderFront(nil) }
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 15
@@ -392,6 +400,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // redirected off-host/HTTP document under that identity, even after
         // submission while independent connectivity verification is running.
         webView.isHidden = !isTrustedPortalURL(webView.url)
+        if isConnecting { hostWindow.orderFront(nil) }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -467,7 +476,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         // superseding a navigation. It is not a failure.
         guard ns.code != NSURLErrorCancelled else { return }
 
-        if ns.code == NSURLErrorNotConnectedToInternet {
+        if ConnectionDetectionPolicy.isTransportFailure(domain: ns.domain, code: ns.code) {
             sawNetworkNotReadyInAttempt = true
         }
 
@@ -988,6 +997,7 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
     private func succeed(_ token: Int) {
         guard isLive(token) else { return }
         finish(token)
+        NetworkMonitor.shared.noteInternetReachable(true)
         Logger.shared.log("Connected.")
         retryCount = 0
         consecutiveGiveUps = 0
@@ -1008,18 +1018,16 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
         guard isLive(token) else { return }
         finish(token)
 
-        // Count every resolved failed attempt. This used to increment only in
-        // the give-up branch below, so Success counted attempts while Failed
-        // counted whole give-up episodes — two different units side by side
-        // under two labels that read as a matched pair, both parked near zero.
-        totalFailures += 1
-        lastFailureReason = reason
-        showResult(.failure)
-
         if sawNetworkNotReadyInAttempt && networkNotReadyRetries < networkNotReadyDelays.count {
+            // The network is still coming up: not a login failure, so it is not
+            // counted, not shown as a red banner, and logged once per episode.
             let delay = networkNotReadyDelays[networkNotReadyRetries] + Double.random(in: 0...0.5)
             networkNotReadyRetries += 1
-            Logger.shared.log("Network not ready yet (\(reason)). Retrying in \(Int(delay))s (\(networkNotReadyRetries)/\(networkNotReadyDelays.count)).")
+            if networkNotReadyRetries == 1 {
+                Logger.shared.log("Network not ready yet (\(reason)). Waiting for it to settle…")
+            } else {
+                Logger.shared.debug("Network still settling (\(reason)). Retry \(networkNotReadyRetries)/\(networkNotReadyDelays.count) in \(Int(delay))s.")
+            }
             Logger.shared.debug("Attempt \(token) retry wait=\(String(format: "%.3f", delay))s")
             nextAttemptAt = Date().addingTimeInterval(delay)
             let generation = retryScheduleGeneration
@@ -1035,6 +1043,14 @@ final class AutoConnectManager: NSObject, ObservableObject, WKNavigationDelegate
             }
             return
         }
+
+        // Count every resolved failed attempt. This used to increment only in
+        // the give-up branch below, so Success counted attempts while Failed
+        // counted whole give-up episodes — two different units side by side
+        // under two labels that read as a matched pair, both parked near zero.
+        totalFailures += 1
+        lastFailureReason = reason
+        showResult(.failure)
 
         if retryCount < retryDelays.count {
             // Jitter keeps a flapping network from lining every retry up on the same

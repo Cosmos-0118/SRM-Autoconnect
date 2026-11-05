@@ -25,7 +25,7 @@ src = src.replace('UserDefaults.standard', f'UserDefaults(suiteName: "PortalWind
 src += '\nextension AutoConnectManager { var portalWindowForTest: NSWindow { hostWindow }; var portalBrowserForTest: WKWebView { webView } }\n'
 (work/'AutoConnectManager.swift').write_text(src)
 PY
-SOURCES=("$WORK/AutoConnectManager.swift" "$ROOT/tests/PortalWindowHarness.swift")
+SOURCES=("$WORK/AutoConnectManager.swift" "$ROOT/App/ConnectionDetectionPolicy.swift" "$ROOT/tests/PortalWindowHarness.swift")
 if [ -f "$ROOT/App/PortalLoginView.swift" ]; then SOURCES+=("$ROOT/App/PortalLoginView.swift"); fi
 swiftc -module-cache-path "$WORK/module-cache" -target "$(uname -m)-apple-macosx13.0" "${SOURCES[@]}" -o "$WORK/harness"
 "$WORK/harness" "$WORK" "${1:-$WORK/preview.png}"

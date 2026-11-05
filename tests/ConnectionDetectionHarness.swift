@@ -55,6 +55,13 @@ final class Logger {
         check("Apple cannot override online quorum", !ConnectionDetectionPolicy.shouldLogin(after: .init(online: true, captivePortal: true, detail: ""), consecutiveOfflineProbes: 2))
         check("ambiguous outage needs confirmation", !ConnectionDetectionPolicy.shouldLogin(after: offline, consecutiveOfflineProbes: 1))
         check("explicit interception can trigger now", ConnectionDetectionPolicy.shouldLogin(after: captive, consecutiveOfflineProbes: 1))
+        for code in [-1001, -1003, -1004, -1005, -1006, -1009, -1018, -1020] {
+            check("transport error \(code) means network settling", ConnectionDetectionPolicy.isTransportFailure(domain: NSURLErrorDomain, code: code))
+        }
+        for code in [-999, -1200, -1202, -1100, -2000] {
+            check("error \(code) is not a settling error", !ConnectionDetectionPolicy.isTransportFailure(domain: NSURLErrorDomain, code: code))
+        }
+        check("non-URL domain never settles", !ConnectionDetectionPolicy.isTransportFailure(domain: "WKErrorDomain", code: -1004))
         do {
             let w = World(); let m = w.monitor(); m.updateNetworkStatus(); m.updatePathStatus(.satisfied)
             check("join launches single probe", w.probes.count == 1)

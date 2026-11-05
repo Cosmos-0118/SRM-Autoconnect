@@ -12,6 +12,18 @@ struct DashboardView: View {
         }
     }
 
+    /// Green only when a real probe on this network reached the internet. The
+    /// dot used to turn green on the SSID alone, so joining SRMIST without a
+    /// working login looked identical to being online.
+    private var statusColor: Color {
+        guard networkMonitor.isConnectedToSRM else { return .red }
+        switch networkMonitor.internetReachable {
+        case .some(true): return Theme.green
+        case .some(false): return .red
+        case .none: return .orange
+        }
+    }
+
     var body: some View {
         // Force Connect is pinned below the scroll area rather than sitting at
         // the end of it. The popover is a fixed 300x400, and with the NEXT
@@ -30,9 +42,9 @@ struct DashboardView: View {
                 Spacer()
 
                 Circle()
-                    .fill(networkMonitor.isConnectedToSRM ? Theme.green : Color.red)
+                    .fill(statusColor)
                     .frame(width: 10, height: 10)
-                    .shadow(color: networkMonitor.isConnectedToSRM ? Theme.green : Color.red, radius: 4)
+                    .shadow(color: statusColor, radius: 4)
             }
             .padding(.horizontal)
             .padding(.top, 26)

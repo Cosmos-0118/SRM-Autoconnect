@@ -9,6 +9,11 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
 
     @Published var currentSSID: String = ""
     @Published var isConnectedToSRM: Bool = false
+    /// What the last *real* reachability probe on the current network said:
+    /// nil = not checked yet on this network, true/false = measured. The UI used
+    /// to show "connected" from the SSID alone, so being associated to SRMIST
+    /// without a working login looked identical to having internet.
+    @Published private(set) var internetReachable: Bool?
 
     /// Campus Wi-Fi is rarely a single exact name: SRMIST_5G, SRMIST-Student and
     /// similar all front the same portal. This used to be an exact-match set
@@ -102,6 +107,16 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         isConnectedToSRM
             && latestSSIDReadWasUsable
             && lastPathStatus == .satisfied
+    }
+
+    /// Whatever we measured belongs to the network state that produced it.
+    private func invalidateInternetState() {
+        if internetReachable != nil { internetReachable = nil }
+    }
+
+    func noteInternetReachable(_ reachable: Bool) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        if internetReachable != reachable { internetReachable = reachable }
     }
 
     init(dependencies: Dependencies) {
@@ -210,6 +225,7 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         offlineConfirmationWorkItem?.cancel()
         offlineConfirmationWorkItem = nil
         lastReachabilityCheck = nil
+        if status == .satisfied { invalidateInternetState() } else { internetReachable = false }
         if status != .satisfied { dependencies.cancelForReadiness() }
         updateNetworkStatus()
         guard status == .satisfied else {
@@ -254,6 +270,7 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
                 Logger.shared.debug("Ignoring reachability result from a previous Wi-Fi network.")
                 return
             }
+            self.noteInternetReachable(state.online)
             guard !state.online else {
                 self.consecutiveOfflineProbes = 0
                 self.offlineConfirmationWorkItem?.cancel()
@@ -320,6 +337,7 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         wakeRecheckWorkItem?.cancel()
         wakeRecheckWorkItem = nil
         lastReachabilityCheck = nil
+        invalidateInternetState()
         updateNetworkStatus()
         if isReadyForAutomaticLogin {
             Logger.shared.debug("System woke — network ready; checking now.")
@@ -381,6 +399,7 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
 
         let previous = currentSSID
         currentSSID = raw
+        invalidateInternetState()
         networkGeneration &+= 1
         activeProbeID = nil
         consecutiveOfflineProbes = 0
